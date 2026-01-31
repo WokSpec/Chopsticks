@@ -47,7 +47,7 @@ client.on("interactionCreate", async interaction => {
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({
         content: "Command failed",
-        ephemeral: true
+        flags: 64
       });
     }
   }
@@ -62,9 +62,10 @@ client.on(
 
 /* ---------- READY ---------- */
 
-client.once("ready", () => {
-  console.log("Chopsticks online");
+client.once("clientReady", () => {
+  console.log(`Logged in as ${client.user.tag}`);
 });
+
 
 /* ---------- LOGIN ---------- */
 
