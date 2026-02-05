@@ -1,66 +1,56 @@
+// ecosystem.config.cjs
 module.exports = {
   apps: [
+    /* ===================== GATEWAY ===================== */
+    {
+      name: "gateway",
+      script: "src/index.js",
+      node_args: "--enable-source-maps",
+      env_file: ".env",
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 3000
+    },
+
+    /* ===================== CONTROL ===================== */
     {
       name: "control",
       script: "src/control/controlServer.js",
-      env_file: ".env"
+      node_args: "--enable-source-maps",
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 3000
     },
 
+    /* ===================== WORKERS ===================== */
     {
-      name: "worker-1",
+      name: "worker",
       script: "src/workers/workers.js",
+      instances: 5,
+      exec_mode: "fork",
+      node_args: "--enable-source-maps",
       env_file: ".env",
       env: {
-        WORKER_TOKEN: "MTQ2ODE5NTE0MjQ2Nzk4MTM5NQ.GjXW9j.8wSAXQhEutNCEm2Dxefr-Da3f5o8UvtNjGtCSc",
         CONTROL_URL: "ws://127.0.0.1:3001"
-      }
+      },
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 3000
     },
 
-    {
-      name: "worker-2",
-      script: "src/workers/workers.js",
-      env_file: ".env",
-      env: {
-        WORKER_TOKEN: "MTQ2ODE5ODA4NDA1OTIwNTcyNA.GjKiFW.6DZMG8_sUo72AZ3yO8DMW0RRQZ32sUPAtd7G5U",
-        CONTROL_URL: "ws://127.0.0.1:3001"
-      }
-    },
-
-    {
-      name: "worker-3",
-      script: "src/workers/workers.js",
-      env_file: ".env",
-      env: {
-        WORKER_TOKEN: "MTQ2ODE5NzU2MjYzNTkxNTQyNw.GfjT4j.GRrGVeN1lBc7sZKyQy-NPdYTSMe30KFhiTne-A",
-        CONTROL_URL: "ws://127.0.0.1:3001"
-      }
-    },
-
-    {
-      name: "worker-4",
-      script: "src/workers/workers.js",
-      env_file: ".env",
-      env: {
-        WORKER_TOKEN: "MTQ2ODE5ODMwNDQ3MDAwNzgyOQ.GyZX4p.xYJDrBvEvXb-fuxP5o78uECqUWUPJFmSBhF3S4",
-        CONTROL_URL: "ws://127.0.0.1:3001"
-      }
-    },
-
-    {
-      name: "worker-5",
-      script: "src/workers/workers.js",
-      env_file: ".env",
-      env: {
-        WORKER_TOKEN: "MTQ2ODE5ODcxNDM2MjQzMzYwNg.Gd5sED.OtKWuNPm3H5Pv9o7ce8Fd7v3HEVC0N43LlP3Gg",
-        CONTROL_URL: "ws://127.0.0.1:3001"
-      }
-    },
-
+    /* ===================== LAVALINK ===================== */
     {
       name: "lavalink",
       script: "java",
-      args: "-jar lavalink/Lavalink.jar --spring.config.location=file:./lavalink/application.yml",
-      interpreter: "none"
+      args: [
+        "-Dspring.config.location=./lavalink/application.yml",
+        "-jar",
+        "lavalink/Lavalink.jar"
+      ],
+      interpreter: "none",
+      autorestart: true,
+      max_restarts: 5,
+      restart_delay: 5000
     }
   ]
 };
