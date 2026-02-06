@@ -3,22 +3,28 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "deploy": "node src/deploy-commands.js",
-    "clear": "node src/clear-commands.js",
-    "bot": "node src/index.js",
-    "docker:lavalink": "docker compose -f docker-compose.lavalink.yml up -d",
-    "start": "npm run docker:lavalink && npm run bot",
-    "dev": "npm run deploy && npm run bot"
-  },
+  "bot": "node src/index.js",
+  "docker:lavalink": "docker compose -f docker-compose.lavalink.yml up -d",
+  "start": "npm run docker:lavalink && npm run bot",
+
+  "deploy:guild": "DEPLOY_MODE=guild node scripts/deployCommands.js",
+  "deploy:global": "DEPLOY_MODE=global node scripts/deployCommands.js",
+  "clear:guild": "CLEAR_MODE=guild node scripts/clearCommands.js",
+  "clear:global": "CLEAR_MODE=global node scripts/clearCommands.js"
+}
+,
   "dependencies": {
     "async": "^3.2.6",
     "discord.js": "^14.16.0",
     "dotenv": "^16.4.5",
     "lavalink-client": "^2.7.7",
-    "undici": "^6.2.1",
+    "undici": "^6.23.0",
     "ws": "^8.14.2"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
+  },
+  "overrides": {
+    "undici": "^6.23.0"
   }
 }

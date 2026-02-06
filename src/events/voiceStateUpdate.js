@@ -3,7 +3,7 @@
 // No direct domain mutation. No persistence.
 
 import { ChannelType, PermissionsBitField } from "discord.js";
-import { loadGuildData } from "../utils/storage.js";
+import { getVoiceState } from "../tools/voice/schema.js";
 import {
   registerTempChannel,
   removeTempChannel,
@@ -27,10 +27,9 @@ export default {
 
     if (oldChannel?.id === newChannel?.id) return;
 
-    const data = loadGuildData(guild.id);
-    if (!data || !data.voice) return;
+    const voice = getVoiceState(guild.id);
+    if (!voice) return;
 
-    const voice = data.voice;
     voice.tempChannels ??= {};
     voice.lobbies ??= {};
 
@@ -41,7 +40,7 @@ export default {
       const empty = channel ? channel.members.size === 0 : true;
 
       if (!channel || empty) {
-        removeTempChannel(guild.id, oldChannel.id);
+        removeTempChannel(guild.id, oldChannel.id, voice);
         if (channel) {
           await channel.delete().catch(() => {});
         }
@@ -58,15 +57,16 @@ export default {
     const category = guild.channels.cache.get(lobby.categoryId) ?? null;
     if (!category || category.type !== ChannelType.GuildCategory) return;
 
-    const lockKey = `${newChannel.id}:${member.id}`;
-    const acquired = acquireCreationLock(guild.id, lockKey);
+    const lockId = `${newChannel.id}:${member.id}`;
+    const acquired = acquireCreationLock(guild.id, lockId);
     if (!acquired) return;
 
     try {
       const existing = findUserTempChannel(
         guild.id,
         member.id,
-        newChannel.id
+        newChannel.id,
+        voice
       );
 
       if (existing) {
@@ -105,12 +105,13 @@ export default {
         guild.id,
         channel.id,
         member.id,
-        newChannel.id
+        newChannel.id,
+        voice
       );
 
       await member.voice.setChannel(channel).catch(() => {});
     } finally {
-      releaseCreationLock(guild.id, lockKey);
+      releaseCreationLock(guild.id, lockId);
     }
   }
 };
