@@ -7,6 +7,7 @@ let startPromise = null;
 // One player per guild. Lavalink is guild-scoped.
 // Your command UX can still be VC-gated at the command layer.
 const ctxByGuild = new Map(); // guildId -> ctx
+const createInFlightByGuild = new Map(); // guildId -> Promise<ctx>
 
 function ensureRawHook(client) {
   if (rawHooked) return;
@@ -100,37 +101,55 @@ export async function createOrGetPlayer({
   const existing = ctxByGuild.get(guildId);
   if (existing) return existing;
 
-  const player = manager.createPlayer({
-    guildId,
-    voiceChannelId,
-    textChannelId,
-    selfDeaf: true,
-    volume: 100
-  });
+  const inFlight = createInFlightByGuild.get(guildId);
+  if (inFlight) return inFlight;
 
-  await player.connect();
+  const creation = (async () => {
+    const current = ctxByGuild.get(guildId);
+    if (current) return current;
 
-  const ctx = {
-    player,
-    guildId,
-    voiceChannelId,
-    textChannelId,
-    ownerId,
-    lastActive: Date.now()
-  };
+    const player = manager.createPlayer({
+      guildId,
+      voiceChannelId,
+      textChannelId,
+      selfDeaf: true,
+      volume: 100
+    });
 
-  player.on("trackStart", () => {
-    ctx.lastActive = Date.now();
-  });
+    await player.connect();
 
-  player.on("queueEnd", () => {
-    // onEmptyQueue destroyAfterMs handles server-side cleanup;
-    // we also clear local ctx if the player is gone.
-    scheduleCtxSweep(guildId);
-  });
+    const ctx = {
+      player,
+      guildId,
+      voiceChannelId,
+      textChannelId,
+      ownerId,
+      lastActive: Date.now()
+    };
 
-  ctxByGuild.set(guildId, ctx);
-  return ctx;
+    player.on("trackStart", () => {
+      ctx.lastActive = Date.now();
+    });
+
+    player.on("queueEnd", () => {
+      // onEmptyQueue destroyAfterMs handles server-side cleanup;
+      // we also clear local ctx if the player is gone.
+      scheduleCtxSweep(guildId);
+    });
+
+    ctxByGuild.set(guildId, ctx);
+    return ctx;
+  })();
+
+  createInFlightByGuild.set(guildId, creation);
+
+  try {
+    return await creation;
+  } catch (err) {
+    throw err;
+  } finally {
+    createInFlightByGuild.delete(guildId);
+  }
 }
 
 export async function searchOnPlayer(ctx, query, requester) {

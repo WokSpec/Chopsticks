@@ -1,7 +1,9 @@
-// src/deploy-commands.js
+// scripts/deployCommands.js
 import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { REST, Routes } from "discord.js";
-import { loadCommands } from "./utils/loadCommands.js";
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
@@ -9,27 +11,58 @@ const CLIENT_ID = process.env.CLIENT_ID;
 if (!TOKEN) throw new Error("DISCORD_TOKEN missing");
 if (!CLIENT_ID) throw new Error("CLIENT_ID missing");
 
-const rest = new REST({ version: "10" }).setToken(TOKEN);
+const MODE = (process.env.DEPLOY_MODE || "guild").toLowerCase(); // "guild" | "global"
+const GUILD_ID = process.env.GUILD_ID || process.env.DEV_GUILD_ID || "";
 
-const loaded = await loadCommands();
+if (MODE !== "global" && MODE !== "guild") {
+  throw new Error('DEPLOY_MODE must be "global" or "guild"');
+}
+if (MODE === "guild" && !GUILD_ID) {
+  throw new Error("GUILD_ID missing for guild deploy (set GUILD_ID or DEV_GUILD_ID)");
+}
+
+const commandsDir = path.join(process.cwd(), "src", "commands");
+if (!fs.existsSync(commandsDir)) throw new Error(`Missing commands dir: ${commandsDir}`);
+
+const files = fs
+  .readdirSync(commandsDir, { withFileTypes: true })
+  .filter(d => d.isFile() && d.name.endsWith(".js"))
+  .map(d => d.name)
+  .sort();
+
 const payload = [];
 
-for (const [name, cmd] of loaded.entries()) {
+for (const file of files) {
+  const fullPath = path.join(commandsDir, file);
+
+  let mod;
   try {
-    const json = cmd.data.toJSON();
-    payload.push(json);
+    mod = await import(pathToFileURL(fullPath).href);
   } catch (err) {
-    console.error("\n=== COMMAND SERIALIZATION FAILURE ===");
-    console.error(`Command: /${name}`);
-    console.error("Raw builder:", cmd.data);
-    console.error("Error:", err);
-    process.exit(1);
+    console.error(`[deploy] failed to import ${file}`);
+    throw err;
+  }
+
+  const cmd =
+    mod.default ??
+    (mod.data && mod.execute ? { data: mod.data, execute: mod.execute } : null);
+
+  if (!cmd?.data?.toJSON) continue;
+
+  try {
+    payload.push(cmd.data.toJSON());
+  } catch (err) {
+    console.error(`[deploy] command builder failed: ${file}`);
+    throw err;
   }
 }
 
-await rest.put(
-  Routes.applicationCommands(CLIENT_ID),
-  { body: payload }
-);
+const rest = new REST({ version: "10" }).setToken(TOKEN);
 
-console.log(`Deployed ${payload.length} global commands`);
+if (MODE === "global") {
+  await rest.put(Routes.applicationCommands(CLIENT_ID), { body: payload });
+  console.log(`[deploy] global: ${payload.length} commands`);
+} else {
+  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: payload });
+  console.log(`[deploy] guild(${GUILD_ID}): ${payload.length} commands`);
+}

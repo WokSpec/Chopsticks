@@ -7,19 +7,19 @@ import {
 
 const creationLocks = new Map();
 
-function lockKey(guildId, userId) {
-  return `${guildId}:${userId}`;
+function lockKey(guildId, lockId) {
+  return `${guildId}:${lockId}`;
 }
 
-export function acquireCreationLock(guildId, userId) {
-  const key = lockKey(guildId, userId);
+export function acquireCreationLock(guildId, lockId) {
+  const key = lockKey(guildId, lockId);
   if (creationLocks.has(key)) return false;
   creationLocks.set(key, true);
   return true;
 }
 
-export function releaseCreationLock(guildId, userId) {
-  creationLocks.delete(lockKey(guildId, userId));
+export function releaseCreationLock(guildId, lockId) {
+  creationLocks.delete(lockKey(guildId, lockId));
 }
 
 /* ---------- STATE ACCESS ---------- */
@@ -35,9 +35,10 @@ export function registerTempChannel(
   guildId,
   channelId,
   ownerId,
-  lobbyId
+  lobbyId,
+  voiceOverride = null
 ) {
-  const voice = getVoiceState(guildId);
+  const voice = voiceOverride ?? getVoiceState(guildId);
 
   if (!voice.lobbies[lobbyId]) return;
 
@@ -49,8 +50,12 @@ export function registerTempChannel(
   saveVoiceState(guildId, voice);
 }
 
-export function removeTempChannel(guildId, channelId) {
-  const voice = getVoiceState(guildId);
+export function removeTempChannel(
+  guildId,
+  channelId,
+  voiceOverride = null
+) {
+  const voice = voiceOverride ?? getVoiceState(guildId);
 
   if (voice.tempChannels[channelId]) {
     delete voice.tempChannels[channelId];
@@ -58,8 +63,13 @@ export function removeTempChannel(guildId, channelId) {
   }
 }
 
-export function findUserTempChannel(guildId, userId, lobbyId) {
-  const voice = getVoiceState(guildId);
+export function findUserTempChannel(
+  guildId,
+  userId,
+  lobbyId,
+  voiceOverride = null
+) {
+  const voice = voiceOverride ?? getVoiceState(guildId);
 
   for (const [channelId, temp] of Object.entries(
     voice.tempChannels
