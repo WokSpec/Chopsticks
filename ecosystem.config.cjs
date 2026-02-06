@@ -2,7 +2,7 @@
 module.exports = {
   apps: [
     {
-      name: "bot",
+      name: "chopsticks",
       script: "src/index.js",
       cwd: "./",
       instances: 1,
@@ -10,19 +10,14 @@ module.exports = {
       watch: false,
       env: {
         NODE_ENV: "production",
-
         DISCORD_TOKEN: process.env.DISCORD_TOKEN,
         CLIENT_ID: process.env.CLIENT_ID,
-
-        // optional: used by deploy scripts only, safe to pass through
         DEV_GUILD_ID: process.env.DEV_GUILD_ID,
-        GUILD_ID: process.env.GUILD_ID,
-
-        // Lavalink docker node
-        LAVALINK_HOST: process.env.LAVALINK_HOST || "localhost",
-        LAVALINK_PORT: process.env.LAVALINK_PORT || "2333",
-        LAVALINK_PASSWORD: process.env.LAVALINK_PASSWORD || "youshallnotpass"
-      }
-    }
-  ]
+        PROD_GUILD_ID: process.env.PROD_GUILD_ID,
+        LAVALINK_HOST: process.env.LAVALINK_HOST,
+        LAVALINK_PORT: process.env.LAVALINK_PORT,
+        LAVALINK_PASSWORD: process.env.LAVALINK_PASSWORD,
+      },
+    },
+  ],
 };
