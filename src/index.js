@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client, Collection, GatewayIntentBits, Events } from "discord.js";
-import { startLavalink } from "./lavalink/client.js";
+import { AgentManager } from "./agents/agentManager.js";
+import { spawnAgentsProcess } from "./agents/spawn.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +25,11 @@ const client = new Client({
 
 global.client = client;
 client.commands = new Collection();
+
+/* ===================== AGENTS ===================== */
+
+global.agentManager = null;
+global.__agentsChild = null;
 
 /* ===================== COMMAND LOADER ===================== */
 
@@ -121,11 +127,35 @@ client.once(Events.ClientReady, async () => {
   console.log(`✅ Ready as ${client.user.tag}`);
   console.log(`📊 Serving ${client.guilds.cache.size} guilds`);
 
+  const mgr = new AgentManager({
+    host: process.env.AGENT_CONTROL_HOST,
+    port: process.env.AGENT_CONTROL_PORT
+  });
+
+  global.agentManager = mgr;
+
   try {
-    await startLavalink(client);
-    console.log("🎵 Lavalink initialized");
+    await mgr.start();
+    console.log(`🧩 Agent control listening on ws://${mgr.host}:${mgr.port}`);
   } catch (err) {
-    console.error("❌ Lavalink init failed:", err?.message ?? err);
+    console.error("❌ Agent control startup failed:", err?.message ?? err);
+    return;
+  }
+
+  // Seamless: spawn agents automatically once control is listening.
+  // If you ever want to disable: set AUTO_START_AGENTS=false
+  const auto =
+    String(process.env.AUTO_START_AGENTS ?? "true").toLowerCase() === "true";
+
+  if (auto) {
+    const child = spawnAgentsProcess();
+    global.__agentsChild = child;
+
+    if (child) {
+      console.log("🤖 Agents process started (agentRunner)");
+    } else {
+      console.log("🤖 Agents not started (no tokens configured)");
+    }
   }
 });
 

@@ -5,59 +5,56 @@ let manager = null;
 let rawHooked = false;
 let startPromise = null;
 
-// One ctx per guild.
+// IMPORTANT: Lavalink + Discord voice model = one player per guild (one voice connection per bot per guild).
 const ctxByGuild = new Map(); // guildId -> ctx
 
 function ensureRawHook(client) {
   if (rawHooked) return;
   rawHooked = true;
 
-  // lavalink-client expects the raw gateway payload stream.
-  client.on("raw", (d) => {
+  client.on("raw", d => {
     try {
       manager?.sendRawData(d);
     } catch {}
   });
 }
 
-function normalizeQuery(input) {
+function normalizeSearchQuery(input) {
   const q = String(input ?? "").trim();
   if (!q) return "";
   if (/^https?:\/\//i.test(q)) return q;
-
-  // IMPORTANT:
-  // Lavalink v4 REST expects "ytsearch:..." for search identifiers.
-  // We pass the identifier directly to the Player search to avoid "defaultSearchPlatform"
-  // ambiguity and any double-prefix behaviors across client versions.
   return `ytsearch:${q}`;
 }
 
-function bindManagerEventsOnce() {
+function bindErrorHandlersOnce() {
   if (!manager) return;
   if (manager.__chopsticksBound) return;
   manager.__chopsticksBound = true;
 
-  // Keep ctx lastActive fresh and clean up if we detect destruction.
-  for (const evt of ["trackStart", "queueEnd", "playerDestroy", "nodeDisconnect"]) {
-    try {
-      manager.on(evt, (player) => {
-        if (evt === "nodeDisconnect") {
-          ctxByGuild.clear();
-          return;
-        }
+  // Prevent process-killing unhandled 'error' events.
+  try {
+    manager.on("error", err => {
+      console.error("[lavalink:manager:error]", err?.message ?? err);
+    });
+  } catch {}
 
-        const gid = player?.guildId;
-        if (!gid) return;
+  try {
+    manager.nodeManager?.on?.("error", node => {
+      console.error("[lavalink:node:error]", node?.options?.id ?? "node");
+    });
+  } catch {}
 
-        const ctx = ctxByGuild.get(gid);
-        if (!ctx) return;
+  try {
+    manager.nodeManager?.on?.("disconnect", node => {
+      console.error("[lavalink:node:disconnect]", node?.options?.id ?? "node");
+    });
+  } catch {}
 
-        if (evt === "trackStart") ctx.lastActive = Date.now();
-        if (evt === "queueEnd") scheduleCtxSweep(gid);
-        if (evt === "playerDestroy") ctxByGuild.delete(gid);
-      });
-    } catch {}
-  }
+  try {
+    manager.nodeManager?.on?.("reconnecting", node => {
+      console.error("[lavalink:node:reconnecting]", node?.options?.id ?? "node");
+    });
+  } catch {}
 }
 
 export function initLavalink(client) {
@@ -70,32 +67,27 @@ export function initLavalink(client) {
         id: "main",
         host: process.env.LAVALINK_HOST || "localhost",
         port: Number(process.env.LAVALINK_PORT) || 2333,
-        authorization: process.env.LAVALINK_PASSWORD || "youshallnotpass",
-      },
+        authorization: process.env.LAVALINK_PASSWORD || "youshallnotpass"
+      }
     ],
-    // Required by lavalink-client:
     sendToShard: (guildId, payload) => {
       const guild = client.guilds.cache.get(guildId);
       guild?.shard?.send(payload);
     },
     client: {
       id: client.user.id,
-      username: client.user.username,
+      username: client.user.username
     },
-    // Do not rely on defaultSearchPlatform behavior for identifiers we pass explicitly.
+    autoSkip: true,
     playerOptions: {
-      onDisconnect: {
-        autoReconnect: true,
-        destroyPlayer: false,
-      },
-      onEmptyQueue: {
-        destroyAfterMs: 300_000,
-      },
-    },
+      defaultSearchPlatform: "ytsearch",
+      onDisconnect: { autoReconnect: true, destroyPlayer: false },
+      onEmptyQueue: { destroyAfterMs: 300_000 }
+    }
   });
 
   ensureRawHook(client);
-  bindManagerEventsOnce();
+  bindErrorHandlersOnce();
   return manager;
 }
 
@@ -139,10 +131,9 @@ export async function createOrGetPlayer({ guildId, voiceChannelId, textChannelId
     voiceChannelId,
     textChannelId,
     selfDeaf: true,
-    volume: 100,
+    volume: 100
   });
 
-  // connect can throw if node isn’t actually alive; let it throw
   await player.connect();
 
   const ctx = {
@@ -151,7 +142,7 @@ export async function createOrGetPlayer({ guildId, voiceChannelId, textChannelId
     voiceChannelId,
     textChannelId,
     ownerId,
-    lastActive: Date.now(),
+    lastActive: Date.now()
   };
 
   ctxByGuild.set(guildId, ctx);
@@ -159,55 +150,42 @@ export async function createOrGetPlayer({ guildId, voiceChannelId, textChannelId
 }
 
 export async function searchOnPlayer(ctx, query, requester) {
-  const identifier = normalizeQuery(query);
+  const identifier = normalizeSearchQuery(query);
   if (!identifier) return { tracks: [] };
+  if (typeof ctx?.player?.search !== "function") throw new Error("player-search-missing");
 
-  const p = ctx?.player;
-  if (!p || typeof p.search !== "function") throw new Error("player-search-missing");
-
-  // lavalink-client expects { query } where query is an identifier (ytsearch:... or URL)
-  return await p.search({ query: identifier }, requester);
+  // lavalink-client v2.8.0 search is on player
+  return ctx.player.search({ query: identifier }, requester);
 }
 
 export async function playFirst(ctx, track) {
-  const p = ctx.player;
   ctx.lastActive = Date.now();
-
-  // queue.add exists; queue.clear may not. Guard.
-  await p.queue.add(track);
-  if (!p.playing) await p.play();
+  await ctx.player.queue.add(track);
+  if (!ctx.player.playing) await ctx.player.play();
 }
 
 export function skip(ctx) {
   ctx.lastActive = Date.now();
-  ctx.player.skip();
+  if (typeof ctx.player.skip === "function") ctx.player.skip();
 }
 
 export function pause(ctx, state) {
   ctx.lastActive = Date.now();
-  ctx.player.pause(state);
+  if (typeof ctx.player.pause === "function") ctx.player.pause(state);
 }
 
 function bestEffortClearQueue(player) {
   const q = player?.queue;
   if (!q) return;
 
-  if (typeof q.clear === "function") {
-    try {
-      q.clear();
-      return;
-    } catch {}
-  }
-
-  // Different shapes across versions
-  if (Array.isArray(q)) q.length = 0;
-  if (Array.isArray(q.tracks)) q.tracks.length = 0;
-  if (typeof q.splice === "function" && typeof q.length === "number") q.splice(0, q.length);
+  if (typeof q.clear === "function") return q.clear();
+  if (Array.isArray(q)) return void (q.length = 0);
+  if (Array.isArray(q.tracks)) return void (q.tracks.length = 0);
+  if (typeof q.splice === "function" && typeof q.length === "number") return void q.splice(0, q.length);
 }
 
 export function stop(ctx) {
   ctx.lastActive = Date.now();
-
   try {
     bestEffortClearQueue(ctx.player);
     if (typeof ctx.player.stop === "function") ctx.player.stop();
@@ -221,27 +199,8 @@ export function destroy(guildId) {
   if (!ctx) return;
 
   try {
-    ctx.player.destroy();
+    if (typeof ctx.player.destroy === "function") ctx.player.destroy();
   } catch {}
 
   ctxByGuild.delete(guildId);
-}
-
-function scheduleCtxSweep(guildId) {
-  setTimeout(() => {
-    const ctx = ctxByGuild.get(guildId);
-    if (!ctx) return;
-
-    const idle = Date.now() - ctx.lastActive > 300_000;
-
-    const q = ctx.player?.queue;
-    const size =
-      (typeof q?.size === "number" ? q.size : null) ??
-      (typeof q?.length === "number" ? q.length : null) ??
-      (Array.isArray(q?.tracks) ? q.tracks.length : 0);
-
-    const empty = (size ?? 0) === 0;
-
-    if (idle && empty && !ctx.player.playing) destroy(guildId);
-  }, 300_000);
 }
