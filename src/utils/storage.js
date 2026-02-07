@@ -1,14 +1,14 @@
-import fs from "fs";
-import path from "path";
+// src/utils/storage.js
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const SCHEMA_VERSION = 1;
 const MAX_SAVE_RETRIES = 5;
 
 function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 function guildFile(guildId) {
@@ -19,15 +19,12 @@ function baseData() {
   return {
     schemaVersion: SCHEMA_VERSION,
     rev: 0,
-    voice: {
-      lobbies: {},
-      tempChannels: {}
-    }
+    voice: { lobbies: {}, tempChannels: {} }
   };
 }
 
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+function isPlainObject(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
 function normalizeData(input) {
@@ -37,7 +34,7 @@ function normalizeData(input) {
   const legacyLobbies = isPlainObject(raw.lobbies) ? raw.lobbies : null;
   const legacyTemp = isPlainObject(raw.tempChannels) ? raw.tempChannels : null;
 
-  let voice = isPlainObject(raw.voice) ? { ...raw.voice } : {};
+  const voice = isPlainObject(raw.voice) ? { ...raw.voice } : {};
   if (!isPlainObject(voice.lobbies) && legacyLobbies) voice.lobbies = legacyLobbies;
   if (!isPlainObject(voice.tempChannels) && legacyTemp) voice.tempChannels = legacyTemp;
 
@@ -46,13 +43,8 @@ function normalizeData(input) {
 
   out.voice = voice;
 
-  const schemaVersion = Number.isInteger(raw.schemaVersion)
-    ? raw.schemaVersion
-    : SCHEMA_VERSION;
-  out.schemaVersion = schemaVersion;
-
-  const rev = Number.isInteger(raw.rev) && raw.rev >= 0 ? raw.rev : 0;
-  out.rev = rev;
+  out.schemaVersion = Number.isInteger(raw.schemaVersion) ? raw.schemaVersion : SCHEMA_VERSION;
+  out.rev = Number.isInteger(raw.rev) && raw.rev >= 0 ? raw.rev : 0;
 
   if ("lobbies" in out) delete out.lobbies;
   if ("tempChannels" in out) delete out.tempChannels;
@@ -68,7 +60,6 @@ function detectNeedsMigration(raw, normalized) {
   if (!isPlainObject(raw.voice.lobbies)) return true;
   if (!isPlainObject(raw.voice.tempChannels)) return true;
   if ("lobbies" in raw || "tempChannels" in raw) return true;
-
   if (normalized.schemaVersion !== raw.schemaVersion) return true;
   if (normalized.rev !== raw.rev) return true;
   return false;
@@ -99,22 +90,17 @@ function readGuildDataWithFallback(file) {
   return { data: baseData(), needsWrite: true };
 }
 
-function uniqueTmpName(file) {
-  const rand = Math.random().toString(16).slice(2);
-  return `${file}.${process.pid}.${Date.now()}.${rand}.tmp`;
+function uniqueTmpPath(file) {
+  const rand = crypto.randomBytes(8).toString("hex");
+  return `${file}.tmp.${process.pid}.${rand}`;
 }
 
 function writeAtomicJson(file, data) {
-  const tmp = uniqueTmpName(file);
+  const tmp = uniqueTmpPath(file);
   const bak = `${file}.bak`;
   const json = JSON.stringify(data, null, 2);
 
-  ensureDir();
-
-  // write tmp (unique per write to prevent rename races)
-  fs.writeFileSync(tmp, json, { encoding: "utf8", flag: "wx" });
-
-  // best-effort fsync (dir fsync is not portable; file fsync is enough here)
+  fs.writeFileSync(tmp, json, "utf8");
   try {
     const fd = fs.openSync(tmp, "r");
     try {
@@ -122,16 +108,17 @@ function writeAtomicJson(file, data) {
     } finally {
       fs.closeSync(fd);
     }
-  } catch {}
+  } catch {
+    // best-effort; not all FS support fsync reliably
+  }
 
-  // best-effort backup of last good file
   if (fs.existsSync(file)) {
     try {
       fs.copyFileSync(file, bak);
     } catch {}
   }
 
-  // atomic replace on same filesystem
+  // rename is atomic on same filesystem
   fs.renameSync(tmp, file);
 }
 

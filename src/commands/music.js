@@ -1,32 +1,30 @@
 // src/commands/music.js
-import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
+import { SlashCommandBuilder, EmbedBuilder, MessageFlags } from "discord.js";
 import {
-  getPlayerContext,
-  assertOwnership,
-  assertSameVoice,
-  createOrGetPlayer,
-  searchOnPlayer,
-  playFirst,
-  skip,
-  pause,
-  stop,
-} from "../lavalink/client.js";
+  ensureSessionAgent,
+  getSessionAgent,
+  releaseSession,
+  sendAgentCommand,
+  formatMusicError
+} from "../music/service.js";
 
 export const data = new SlashCommandBuilder()
   .setName("music")
-  .setDescription("Voice-channel gated music")
-  .addSubcommand((s) =>
-    s
-      .setName("play")
-      .setDescription("Play a track")
-      .addStringOption((o) =>
-        o.setName("query").setDescription("Search or URL").setRequired(true)
+  .setDescription("Voice-channel music (agent-backed, one session per voice channel)")
+  .addSubcommand(s =>
+    s.setName("play")
+      .setDescription("Play or queue a track in your current voice channel")
+      .addStringOption(o =>
+        o.setName("query")
+          .setDescription("Search or URL")
+          .setRequired(true)
       )
   )
-  .addSubcommand((s) => s.setName("skip").setDescription("Skip current track"))
-  .addSubcommand((s) => s.setName("pause").setDescription("Pause playback"))
-  .addSubcommand((s) => s.setName("resume").setDescription("Resume playback"))
-  .addSubcommand((s) => s.setName("stop").setDescription("Stop playback"));
+  .addSubcommand(s => s.setName("skip").setDescription("Skip current track"))
+  .addSubcommand(s => s.setName("pause").setDescription("Pause playback"))
+  .addSubcommand(s => s.setName("resume").setDescription("Resume playback"))
+  .addSubcommand(s => s.setName("stop").setDescription("Stop playback"))
+  .addSubcommand(s => s.setName("now").setDescription("Show current track"));
 
 function requireVoice(interaction) {
   const member = interaction.member;
@@ -35,18 +33,23 @@ function requireVoice(interaction) {
   return { ok: true, vc };
 }
 
-function enforceOwnershipAndVC(ctx, userId, voiceChannelId) {
-  assertOwnership(ctx, userId);
-  assertSameVoice(ctx, voiceChannelId);
+function buildRequester(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    discriminator: user.discriminator,
+    avatar: user.avatar
+  };
 }
 
-async function safeReply(interaction, payload) {
+async function safeDeferEphemeral(interaction) {
   try {
-    if (interaction.deferred) return await interaction.editReply(payload);
-    if (interaction.replied) return await interaction.followUp(payload);
-    return await interaction.reply(payload);
-  } catch {
-    // If Discord says "Unknown interaction", do nothing: it’s already dead.
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    return { ok: true };
+  } catch (err) {
+    const code = err?.code;
+    if (code === 10062) return { ok: false, reason: "unknown-interaction" };
+    throw err;
   }
 }
 
@@ -57,94 +60,135 @@ export async function execute(interaction) {
 
   const voiceCheck = requireVoice(interaction);
   if (!voiceCheck.ok) {
-    await safeReply(interaction, { content: "Join a voice channel.", ephemeral: true });
+    await interaction.reply({ content: "Join a voice channel.", flags: MessageFlags.Ephemeral });
     return;
   }
-
   const vc = voiceCheck.vc;
 
-  if (sub === "play") {
-    // Always defer immediately to avoid Unknown interaction if Lavalink/node is slow.
-    await safeReply(interaction, { content: "Searching…", ephemeral: true });
-    try {
-      // Convert the “Searching…” reply into a deferred editReply flow.
-      // If initial reply succeeded, defer is unnecessary and may fail; so we just edit later.
-    } catch {}
+  try {
+    if (sub === "play") {
+      const ack = await safeDeferEphemeral(interaction);
+      if (!ack.ok) return;
 
-    let ctx = getPlayerContext(guildId);
-    if (!ctx) {
-      ctx = await createOrGetPlayer({
+      await interaction.editReply({ content: "Searching..." });
+
+      const alloc = ensureSessionAgent(guildId, vc.id, {
+        textChannelId: interaction.channelId,
+        ownerUserId: userId
+      });
+
+      if (!alloc.ok) {
+        await interaction.editReply({ content: formatMusicError(alloc.reason) });
+        return;
+      }
+
+      const query = interaction.options.getString("query", true);
+
+      let result;
+      try {
+        result = await sendAgentCommand(alloc.agent, "play", {
+          guildId,
+          voiceChannelId: vc.id,
+          textChannelId: interaction.channelId,
+          ownerUserId: userId,
+          query,
+          requester: buildRequester(interaction.user)
+        });
+      } catch (err) {
+        await interaction.editReply({ content: formatMusicError(err) });
+        return;
+      }
+
+      const track = result?.track ?? null;
+      if (!track) {
+        await interaction.editReply({ content: "No results." });
+        return;
+      }
+
+      await interaction.editReply({
+        content: "",
+        embeds: [
+          new EmbedBuilder()
+            .setTitle("Now Playing")
+            .setDescription(track.title ?? "Unknown title")
+        ]
+      });
+      return;
+    }
+
+    const sess = getSessionAgent(guildId, vc.id);
+    if (!sess.ok) {
+      await interaction.reply({
+        content: "Nothing playing in this channel.",
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    const opMap = {
+      skip: "skip",
+      pause: "pause",
+      resume: "resume",
+      stop: "stop",
+      now: "status"
+    };
+
+    const op = opMap[sub];
+    if (!op) {
+      await interaction.reply({ content: "Unknown action.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const ack = await safeDeferEphemeral(interaction);
+    if (!ack.ok) return;
+
+    let result;
+    try {
+      result = await sendAgentCommand(sess.agent, op, {
         guildId,
         voiceChannelId: vc.id,
         textChannelId: interaction.channelId,
-        ownerId: userId,
+        ownerUserId: userId
       });
-    } else {
-      enforceOwnershipAndVC(ctx, userId, vc.id);
+    } catch (err) {
+      if (String(err?.message ?? err) === "no-session") {
+        releaseSession(guildId, vc.id);
+      }
+      await interaction.editReply({ content: formatMusicError(err) });
+      return;
     }
 
-    const query = interaction.options.getString("query", true);
+    if (sub === "now") {
+      const current = result?.current ?? null;
+      if (!current) {
+        await interaction.editReply({ content: "Nothing playing in this channel." });
+        return;
+      }
 
-    let res;
+      await interaction.editReply({
+        embeds: [new EmbedBuilder().setTitle("Now Playing").setDescription(current.title ?? "Unknown title")]
+      });
+      return;
+    }
+
+    if (sub === "stop") {
+      releaseSession(guildId, vc.id);
+      await interaction.editReply({ content: "OK" });
+      return;
+    }
+
+    await interaction.editReply({ content: "OK" });
+  } catch (err) {
+    const msg = formatMusicError(err);
+
     try {
-      res = await searchOnPlayer(ctx, query, interaction.user);
-    } catch (e) {
-      await safeReply(interaction, {
-        content: `Search failed: ${e?.message ?? "unknown error"}`,
-        ephemeral: true,
-      });
-      return;
-    }
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ content: msg });
+      } else {
+        await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral });
+      }
+    } catch {}
 
-    if (!res?.tracks?.length) {
-      await safeReply(interaction, { content: "No results.", ephemeral: true });
-      return;
-    }
-
-    const track = res.tracks[0];
-
-    try {
-      await playFirst(ctx, track);
-    } catch (e) {
-      await safeReply(interaction, {
-        content: `Play failed: ${e?.message ?? "unknown error"}`,
-        ephemeral: true,
-      });
-      return;
-    }
-
-    await safeReply(interaction, {
-      embeds: [
-        new EmbedBuilder()
-          .setTitle("Now Playing")
-          .setDescription(track.info?.title ?? "Unknown title"),
-      ],
-    });
-    return;
+    throw err;
   }
-
-  const ctx = getPlayerContext(guildId);
-  if (!ctx) {
-    await safeReply(interaction, { content: "Nothing playing in this guild.", ephemeral: true });
-    return;
-  }
-
-  try {
-    enforceOwnershipAndVC(ctx, userId, vc.id);
-  } catch (e) {
-    await safeReply(interaction, { content: `${e.message}`, ephemeral: true });
-    return;
-  }
-
-  try {
-    if (sub === "skip") skip(ctx);
-    if (sub === "pause") pause(ctx, true);
-    if (sub === "resume") pause(ctx, false);
-    if (sub === "stop") stop(ctx);
-  } catch (e) {
-    await safeReply(interaction, { content: `Failed: ${e?.message ?? "unknown"}`, ephemeral: true });
-    return;
-  }
-
-  await safeReply(interaction, { content: "OK", ephemeral: true });
 }

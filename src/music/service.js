@@ -1,0 +1,67 @@
+// src/music/service.js
+
+function key(guildId, voiceChannelId) {
+  return `${guildId}:${voiceChannelId}`;
+}
+
+export function getSessionAgent(guildId, voiceChannelId) {
+  const mgr = global.agentManager;
+  if (!mgr) return { ok: false, reason: "agents-not-ready" };
+
+  return mgr.getSessionAgent(guildId, voiceChannelId);
+}
+
+export function ensureSessionAgent(guildId, voiceChannelId, { textChannelId, ownerUserId } = {}) {
+  const mgr = global.agentManager;
+  if (!mgr) return { ok: false, reason: "agents-not-ready" };
+
+  return mgr.ensureSessionAgent(guildId, voiceChannelId, { textChannelId, ownerUserId });
+}
+
+export function releaseSession(guildId, voiceChannelId) {
+  const mgr = global.agentManager;
+  if (!mgr) return;
+
+  mgr.releaseSession(guildId, voiceChannelId);
+}
+
+export async function sendAgentCommand(agent, op, data) {
+  const mgr = global.agentManager;
+  if (!mgr) throw new Error("agents-not-ready");
+  return mgr.request(agent, op, data);
+}
+
+export function formatMusicError(reasonOrErr) {
+  const msg = String(reasonOrErr?.message ?? reasonOrErr);
+
+  if (msg === "no-agents-in-guild" || msg === "no-free-agents") {
+    return "No music agents available. Server owner must deploy/invite agents to enable multi-channel playback.";
+  }
+  if (msg === "agents-not-ready") {
+    return "Music agents are still starting up.";
+  }
+  if (msg === "not-owner") {
+    return "This voice channel already has an active music session owned by someone else.";
+  }
+  if (msg === "player-search-missing") {
+    return "Search is unavailable (check Lavalink/plugin).";
+  }
+  if (msg === "lavalink-not-ready") {
+    return "Lavalink is not ready.";
+  }
+  if (msg === "no-session") {
+    return "Nothing playing in this channel.";
+  }
+  if (msg === "agent-offline") {
+    return "Music agent went offline. Try again.";
+  }
+  if (msg === "agent-timeout") {
+    return "Music agent timed out. Try again.";
+  }
+
+  return "Command failed.";
+}
+
+export function sessionKey(guildId, voiceChannelId) {
+  return key(guildId, voiceChannelId);
+}
