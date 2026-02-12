@@ -18,6 +18,7 @@ import {
 } from "../music/service.js";
 import { getMusicConfig, setDefaultMusicMode, updateMusicSettings } from "../music/config.js";
 import { auditLog } from "../utils/audit.js";
+import { handleInteractionError, handleSafeError, ErrorCategory } from "../utils/errorHandler.js";
 
 export const data = new SlashCommandBuilder()
   .setName("music")
@@ -144,6 +145,19 @@ function requireVoice(interaction) {
   return { ok: true, vc };
 }
 
+async function resolveMemberVoiceId(interaction) {
+  const direct = interaction.member?.voice?.channelId ?? null;
+  if (direct) return direct;
+  const guild = interaction.guild;
+  if (!guild) return null;
+  try {
+    const member = await guild.members.fetch(interaction.user.id);
+    return member?.voice?.channelId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function buildRequester(user) {
   return {
     id: user.id,
@@ -153,15 +167,20 @@ function buildRequester(user) {
   };
 }
 
-async function safeDeferEphemeral(interaction) {
+async function safeDefer(interaction, ephemeral = true) {
   try {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const options = ephemeral ? { flags: MessageFlags.Ephemeral } : {};
+    await interaction.deferReply(options);
     return { ok: true };
   } catch (err) {
     const code = err?.code;
     if (code === 10062) return { ok: false, reason: "unknown-interaction" };
     throw err;
   }
+}
+
+function safeDeferEphemeral(interaction) {
+  return safeDefer(interaction, true);
 }
 
 function makeEmbed(title, description, fields = [], url = null, thumbnail_url = null, color = null, footer = null) {
@@ -180,7 +199,12 @@ function buildTrackEmbed(action, track) {
   if (track?.author) fields.push({ name: "Artist", value: track.author, inline: true });
   const dur = track?.duration ?? track?.length;
   if (dur) fields.push({ name: "Duration", value: formatDuration(dur), inline: true });
-  if (track?.requester?.username) fields.push({ name: "Requested by", value: track.requester.username, inline: true });
+  // Null-safe requester handling
+  const requester = track?.requester;
+  if (requester && (requester.username || requester.displayName || requester.tag)) {
+    const name = requester.username || requester.displayName || requester.tag;
+    fields.push({ name: "Requested by", value: name, inline: true });
+  }
   return makeEmbed(
     title,
     track?.title ?? "Unknown title",
@@ -195,13 +219,53 @@ const QUEUE_COLOR = 0x5865F2;
 const SEARCH_TTL_MS = 10 * 60_000;
 const searchCache = new Map(); // key -> { userId, guildId, voiceChannelId, tracks, createdAt }
 
+// Anti-spam: Track button interactions to prevent double-processing
+const buttonProcessing = new Map(); // interactionId -> timestamp
+const BUTTON_DEBOUNCE_MS = 2000; // 2 seconds
+
+// Per-user cooldowns for buttons
+const userButtonCooldowns = new Map(); // userId:buttonType -> timestamp
+const BUTTON_COOLDOWN_MS = 1000; // 1 second between same button presses
+
+// Cleanup old entries every 30 seconds
+setInterval(() => {
+  const now = Date.now();
+  // Clean button processing tracker
+  for (const [id, timestamp] of buttonProcessing.entries()) {
+    if (now - timestamp > BUTTON_DEBOUNCE_MS) {
+      buttonProcessing.delete(id);
+    }
+  }
+  // Clean user cooldowns
+  for (const [key, timestamp] of userButtonCooldowns.entries()) {
+    if (now - timestamp > BUTTON_COOLDOWN_MS * 2) {
+      userButtonCooldowns.delete(key);
+    }
+  }
+}, 30_000).unref?.();
+
+// Periodic cleanup for search cache (every 2 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of searchCache.entries()) {
+    if (now - entry.createdAt > SEARCH_TTL_MS) {
+      searchCache.delete(key);
+    }
+  }
+}, 120_000).unref?.();
+
 function randomKey() {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // Use crypto random for better collision resistance
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).slice(2, 11);
+  const random2 = Math.random().toString(36).slice(2, 11);
+  return `${timestamp}${random}${random2}`;
 }
 
 function setSearchCache(entry) {
   const key = randomKey();
   searchCache.set(key, { ...entry, createdAt: Date.now() });
+  // Note: Individual cleanup is redundant with periodic cleanup, but kept as fallback
   setTimeout(() => searchCache.delete(key), SEARCH_TTL_MS).unref?.();
   return key;
 }
@@ -494,7 +558,7 @@ export async function execute(interaction) {
   try {
     const config = await getMusicConfig(guildId);
     if (sub === "play") {
-      const ack = await safeDeferEphemeral(interaction);
+      const ack = await safeDefer(interaction, false);
       if (!ack.ok) return;
 
       const query = interaction.options.getString("query", true);
@@ -909,21 +973,49 @@ export async function handleButton(interaction) {
   const id = String(interaction.customId || "");
   if (!id.startsWith("musicq:")) return false;
 
+  // Anti-spam: Check if already processing this interaction
+  if (buttonProcessing.has(interaction.id)) {
+    return true; // Silently ignore duplicate
+  }
+  buttonProcessing.set(interaction.id, Date.now());
+
   const parts = id.split(":");
   const voiceChannelId = parts[1];
   const page = Math.max(0, Number.parseInt(parts[2] || "0", 10) || 0);
   const action = parts[3] || "refresh";
 
-  const memberVcId = interaction.member?.voice?.channelId ?? null;
-  if (memberVcId !== voiceChannelId) {
+  // Check user cooldown for this button type
+  const cooldownKey = `${interaction.user.id}:${action}`;
+  const lastPressed = userButtonCooldowns.get(cooldownKey);
+  if (lastPressed && (Date.now() - lastPressed) < BUTTON_COOLDOWN_MS) {
+    // Too soon, silently ignore
+    buttonProcessing.delete(interaction.id);
+    return true;
+  }
+  userButtonCooldowns.set(cooldownKey, Date.now());
+
+  const memberVcId = await resolveMemberVoiceId(interaction);
+  if (!memberVcId || memberVcId !== voiceChannelId) {
+    buttonProcessing.delete(interaction.id);
     await interaction.reply({
       content: "Join the same voice channel to control this queue.",
       ephemeral: true
-    }).catch(() => {});
+    }).catch(err => {
+      handleInteractionError(err, {
+        operation: 'music_button_vc_check',
+        guildId: interaction.guildId
+      });
+    });
     return true;
   }
 
-  await interaction.deferUpdate().catch(() => {});
+  await interaction.deferUpdate().catch(err => {
+    buttonProcessing.delete(interaction.id);
+    handleInteractionError(err, {
+      operation: 'music_button_defer',
+      guildId: interaction.guildId
+    });
+  });
 
   const guildId = interaction.guildId;
   if (!guildId || !voiceChannelId) return true;
@@ -933,7 +1025,12 @@ export async function handleButton(interaction) {
     await interaction.editReply({
       embeds: [makeEmbed("Music", formatMusicError(sess.reason), [], null, null, 0xFF0000)],
       components: []
-    }).catch(() => {});
+    }).catch(err => {
+      handleInteractionError(err, {
+        operation: 'music_button_error_reply',
+        guildId: interaction.guildId
+      });
+    });
     return true;
   }
 
@@ -997,6 +1094,9 @@ export async function handleButton(interaction) {
     }).catch(() => {});
   }
 
+  // Clean up processing tracker
+  buttonProcessing.delete(interaction.id);
+  
   return true;
 }
 
@@ -1017,8 +1117,8 @@ export async function handleSelect(interaction) {
     return true;
   }
 
-  const memberVcId = interaction.member?.voice?.channelId ?? null;
-  if (memberVcId !== entry.voiceChannelId) {
+  const memberVcId = await resolveMemberVoiceId(interaction);
+  if (!memberVcId || memberVcId !== entry.voiceChannelId) {
     await interaction.reply({ content: "Join the same voice channel to select this result.", ephemeral: true }).catch(() => {});
     return true;
   }
@@ -1042,6 +1142,7 @@ export async function handleSelect(interaction) {
   } catch {}
 
   try {
+    console.log(`[music:select] Sending play command for track: ${track.title || track.uri} to agent ${sess.agent?.id}`);
     const result = await sendAgentCommand(sess.agent, "play", {
       guildId: entry.guildId,
       voiceChannelId: entry.voiceChannelId,
@@ -1054,6 +1155,7 @@ export async function handleSelect(interaction) {
       fallbackProviders: config?.fallbackProviders,
       requester: buildRequester(interaction.user)
     });
+    console.log(`[music:select] Play command result:`, result);
     const playedTrack = result?.track ?? track;
     const action = String(result?.action ?? "queued");
     await interaction.update({
@@ -1061,6 +1163,7 @@ export async function handleSelect(interaction) {
       components: []
     }).catch(() => {});
   } catch (err) {
+    console.error(`[music:select] Error sending play command:`, err?.stack ?? err?.message ?? err);
     await interaction.update({
       embeds: [makeEmbed("Music Error", formatMusicError(err), [], null, null, 0xFF0000)],
       components: []
