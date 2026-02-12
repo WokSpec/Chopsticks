@@ -19,11 +19,13 @@ import WebSocket from "ws";
 import { createAgentLavalink } from "../lavalink/agentLavalink.js";
 import { fetchAgentBots, updateAgentBotStatus, upsertAgentRunner, deleteAgentRunner } from "../utils/storage.js";
 import { randomUUID } from "node:crypto";
+import { handleSafeError, handleCriticalError, handleVoiceError, ErrorCategory, ErrorSeverity } from "../utils/errorHandler.js";
 
 // Unique ID for this runner instance
 const RUNNER_ID = process.env.RUNNER_ID || randomUUID();
 const CONTROL_URL = process.env.AGENT_CONTROL_URL || "ws://127.0.0.1:8787"; // Agent-specific WS URL for AgentManager
 const MUSIC_CONTROL_LOCKED = String(process.env.MUSIC_CONTROL_LOCKED ?? "true") === "true";
+const RUNNER_SECRET = String(process.env.AGENT_RUNNER_SECRET || "").trim();
 
 // Polling interval for DB changes
 const POLL_INTERVAL_MS = Number(process.env.AGENT_RUNNER_POLL_INTERVAL_MS) || 10_000;
@@ -101,6 +103,7 @@ function getQueueTracks(queue) {
 // The startAgent function (now receives agentConfig directly from DB)
 async function startAgent(agentConfig) {
   const { agent_id: agentId, token, client_id: clientId, tag } = agentConfig;
+  const poolId = String(agentConfig.pool_id ?? agentConfig.poolId ?? "default").trim() || "default";
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates],
@@ -149,7 +152,9 @@ async function startAgent(agentConfig) {
       botUserId: client.user?.id ?? null,
       tag: client.user?.tag ?? null,
       ready: Boolean(lavalink),
-      guildIds: Array.from(client.guilds.cache.keys())
+      guildIds: Array.from(client.guilds.cache.keys()),
+      poolId,
+      runnerSecret: RUNNER_SECRET || undefined
     });
   }
 
@@ -292,7 +297,13 @@ async function startAgent(agentConfig) {
     setTimeout(() => {
       try {
         sendRelease(guildId, voiceChannelId, reason);
-      } catch {}
+      } catch (err) {
+        handleSafeError(err, {
+          operation: 'delayed_voice_release',
+          category: ErrorCategory.VOICE,
+          guildId
+        });
+      }
     }, ms + 150);
   }
 
@@ -369,12 +380,22 @@ async function startAgent(agentConfig) {
     if (player) {
       try {
         player.stop();
-      } catch {}
+      } catch (err) {
+        handleVoiceError(err, {
+          operation: 'assistant_player_stop',
+          guildId
+        });
+      }
     }
     if (connection) {
       try {
         connection.destroy();
-      } catch {}
+      } catch (err) {
+        handleVoiceError(err, {
+          operation: 'assistant_connection_destroy',
+          guildId
+        });
+      }
     }
     if (guildId && voiceChannelId) {
       sendAssistantRelease(guildId, voiceChannelId, reason);
@@ -497,7 +518,12 @@ async function startAgent(agentConfig) {
         ended = true;
         try {
           opusStream.destroy();
-        } catch {}
+        } catch (err) {
+          handleVoiceError(err, {
+            operation: 'opus_stream_destroy_timeout',
+            severity: ErrorSeverity.LOW
+          });
+        }
         resolve(Buffer.concat(chunks));
       }, maxMs);
 
@@ -693,8 +719,19 @@ async function startAgent(agentConfig) {
       await lavalink.destroySession(channel.guild.id, channel.id);
       try {
         if (typeof ctx.player?.destroy === "function") ctx.player.destroy();
-      } catch {}
-    } catch {}
+      } catch (err) {
+        handleVoiceError(err, {
+          operation: 'empty_channel_player_destroy',
+          guildId: channel.guild.id
+        });
+      }
+    } catch (err) {
+      handleCriticalError(err, {
+        operation: 'empty_channel_lavalink_destroy',
+        category: ErrorCategory.MUSIC,
+        guildId: channel.guild.id
+      });
+    }
 
     sendRelease(channel.guild.id, channel.id, "empty-channel");
   }
@@ -720,8 +757,19 @@ async function startAgent(agentConfig) {
         await lavalink.destroySession(ctx.guildId, ctx.voiceChannelId);
         try {
           if (typeof ctx.player?.destroy === "function") ctx.player.destroy();
-        } catch {}
-      } catch {}
+        } catch (err) {
+          handleVoiceError(err, {
+            operation: 'agent_moved_player_destroy',
+            guildId: ctx.guildId
+          });
+        }
+      } catch (err) {
+        handleCriticalError(err, {
+          operation: 'agent_moved_lavalink_destroy',
+          category: ErrorCategory.MUSIC,
+          guildId: ctx.guildId
+        });
+      }
 
       sendRelease(ctx.guildId, ctx.voiceChannelId, actualVc ? "agent-moved" : "agent-disconnected");
     }
@@ -905,11 +953,17 @@ async function startAgent(agentConfig) {
       const query = payload.query;
       const requester = payload.requester ?? null;
 
+      console.log(`[agent:play] Searching for: ${query}`);
       const res = await mgr.search(ctx, query, requester);
-      if (!res?.tracks?.length) return { track: null, action: "none", mode: ctx.mode };
+      if (!res?.tracks?.length) {
+        console.log(`[agent:play] No tracks found for: ${query}`);
+        return { track: null, action: "none", mode: ctx.mode };
+      }
 
       const track = res.tracks[0];
+      console.log(`[agent:play] Found track: ${track.info?.title || track.title}, calling enqueueAndPlay`);
       const playRes = await mgr.enqueueAndPlay(ctx, track);
+      console.log(`[agent:play] enqueueAndPlay result:`, playRes);
 
       return {
         track: serializeTrack(track),
@@ -1036,16 +1090,38 @@ async function startAgent(agentConfig) {
     stop: async () => {
       try {
         await stopAssistant("shutdown");
-      } catch {}
+      } catch (err) {
+        handleCriticalError(err, {
+          operation: 'agent_shutdown_stop_assistant',
+          category: ErrorCategory.ASSISTANT
+        });
+      }
       try {
         if (wsHeartbeat) clearInterval(wsHeartbeat);
-      } catch {}
+      } catch (err) {
+        handleSafeError(err, {
+          operation: 'agent_shutdown_clear_heartbeat',
+          category: ErrorCategory.WEBSOCKET,
+          severity: ErrorSeverity.LOW
+        });
+      }
       try {
         if (ws && ws.readyState === WebSocket.OPEN) ws.close();
-      } catch {}
+      } catch (err) {
+        handleSafeError(err, {
+          operation: 'agent_shutdown_ws_close',
+          category: ErrorCategory.WEBSOCKET,
+          severity: ErrorSeverity.LOW
+        });
+      }
       try {
         await client.destroy();
-      } catch {}
+      } catch (err) {
+        handleCriticalError(err, {
+          operation: 'agent_shutdown_client_destroy',
+          category: ErrorCategory.DISCORD_API
+        });
+      }
     }
   };
 }

@@ -17,6 +17,118 @@ export function createAgentLavalink(agentClient) {
   const voiceServerByGuild = new Map(); // guildId -> { token, endpoint }
   const voiceWaiters = new Map(); // guildId -> Array<{ vcId, resolve, reject, t }>
 
+  // Periodic cleanup for fallbackAttempts (every 10 minutes)
+  const cleanupInterval = setInterval(() => {
+    const now = Date.now();
+    const maxAge = 30 * 60_000; // 30 minutes
+    for (const [key, timestamp] of fallbackAttempts.entries()) {
+      if (now - timestamp > maxAge) {
+        fallbackAttempts.delete(key);
+      }
+    }
+  }, 600_000);
+  cleanupInterval.unref?.();
+
+  // Register cleanup handler for memory leak prevention (Day 5)
+  // Only register if sessionCleanup is available (for main bot, not agents)
+  if (typeof sessionCleanup !== 'undefined' && sessionCleanup && sessionCleanup.registerHandler) {
+    sessionCleanup.registerHandler('lavalink', async (guildId, channelId, sessKey) => {
+    let cleaned = 0;
+
+    if (guildId === 'periodic') {
+      // Periodic cleanup already handled by fallbackAttempts interval above
+      return 0;
+    }
+
+    if (channelId) {
+      // Channel-specific cleanup
+      const key = `${guildId}:${channelId}`;
+      
+      if (ctxBySession.has(key)) {
+        const ctx = ctxBySession.get(key);
+        // Clean up player if exists
+        if (ctx.player && typeof ctx.player.destroy === 'function') {
+          try {
+            ctx.player.destroy();
+          } catch (err) {
+            logger.error('Failed to destroy player during cleanup', { key, error: String(err) });
+          }
+        }
+        ctxBySession.delete(key);
+        cleaned++;
+      }
+
+      if (locks.has(key)) {
+        locks.delete(key);
+        cleaned++;
+      }
+
+      if (fallbackAttempts.has(key)) {
+        fallbackAttempts.delete(key);
+        cleaned++;
+      }
+    } else if (guildId) {
+      // Guild-wide cleanup
+      for (const [key, ctx] of ctxBySession.entries()) {
+        if (key.startsWith(`${guildId}:`)) {
+          if (ctx.player && typeof ctx.player.destroy === 'function') {
+            try {
+              ctx.player.destroy();
+            } catch (err) {
+              logger.error('Failed to destroy player during guild cleanup', { key, error: String(err) });
+            }
+          }
+          ctxBySession.delete(key);
+          cleaned++;
+        }
+      }
+
+      for (const key of locks.keys()) {
+        if (key.startsWith(`${guildId}:`)) {
+          locks.delete(key);
+          cleaned++;
+        }
+      }
+
+      for (const key of fallbackAttempts.keys()) {
+        if (key.startsWith(`${guildId}:`)) {
+          fallbackAttempts.delete(key);
+          cleaned++;
+        }
+      }
+
+      // Clean up voice state maps
+      if (voiceStateByGuild.has(guildId)) {
+        voiceStateByGuild.delete(guildId);
+        cleaned++;
+      }
+
+      if (voiceServerByGuild.has(guildId)) {
+        voiceServerByGuild.delete(guildId);
+        cleaned++;
+      }
+
+      if (voiceWaiters.has(guildId)) {
+        voiceWaiters.delete(guildId);
+        cleaned++;
+      }
+    }
+
+    return cleaned;
+    });
+  }
+
+  // Cleanup function for shutdown
+  function cleanup() {
+    clearInterval(cleanupInterval);
+    ctxBySession.clear();
+    locks.clear();
+    fallbackAttempts.clear();
+    voiceStateByGuild.clear();
+    voiceServerByGuild.clear();
+    voiceWaiters.clear();
+  }
+
   function clampMs(v, fallback, min, max) {
     const n = Number(v);
     if (!Number.isFinite(n)) return fallback;
@@ -170,13 +282,23 @@ export function createAgentLavalink(agentClient) {
         try {
           const res = await search(ctx, query, track?.requester ?? null, providers);
           const fallback = res?.tracks?.[0];
-          if (!fallback) return;
+          if (!fallback) {
+            console.warn("[agent:lavalink:fallback] no tracks found for:", query);
+            return;
+          }
           await softStopPlayback(ctx);
           await enqueueAndPlay(ctx, fallback);
         } catch (err) {
-          console.warn("[agent:lavalink:fallback] failed:", err?.message ?? err);
+          console.error("[agent:lavalink:fallback] failed:", err?.message ?? err, {
+            query,
+            providers,
+            guildId,
+            voiceChannelId
+          });
         }
-      }).catch(() => {});
+      }).catch(err => {
+        console.error("[agent:lavalink:fallback] lock failed:", err?.message ?? err);
+      });
     };
 
     try {
@@ -255,20 +377,54 @@ export function createAgentLavalink(agentClient) {
   }
 
   function normalizeSearchQuery(input) {
-    const q = String(input ?? "").trim();
+    const raw = String(input ?? "");
+    let q = raw.replace(/\s+/g, " ").trim();
     if (!q) return "";
     if (/^https?:\/\//i.test(q)) return q;
     if (/^[a-z0-9]+search:/i.test(q)) return q;
+    if (/^www\./i.test(q)) return `https://${q}`;
     return q;
+  }
+
+  function buildSearchVariants(query, provider) {
+    const base = String(query ?? "").trim();
+    if (!base) return [];
+    const variants = new Set();
+    const stripped = base.replace(/\s*[\[\(].*?[\]\)]\s*/g, " ").replace(/\s+/g, " ").trim();
+    const dashNormalized = stripped.replace(/\s*-\s*/g, " ").replace(/\s+/g, " ").trim();
+    variants.add(base);
+    if (stripped && stripped !== base) variants.add(stripped);
+    if (dashNormalized && dashNormalized !== stripped) variants.add(dashNormalized);
+    const prov = String(provider || "").toLowerCase();
+    if (prov.startsWith("yt")) {
+      const seed = dashNormalized || stripped || base;
+      variants.add(`${seed} official audio`);
+      variants.add(`${seed} audio`);
+    }
+    return Array.from(variants).slice(0, 5);
   }
 
   function withSessionLock(key, fn) {
     const prev = locks.get(key) ?? Promise.resolve();
     const next = prev
-      .catch(() => {})
+      .catch(err => {
+        // Log lock chain errors to help debug issues
+        console.warn("[agent:lavalink:lock] previous promise failed:", key, err?.message);
+      })
       .then(fn)
+      .catch(err => {
+        // Re-throw to maintain error propagation
+        throw err;
+      })
       .finally(() => {
-        if (locks.get(key) === next) locks.delete(key);
+        try {
+          // Only delete if we're still the current lock to avoid race
+          if (locks.get(key) === next) {
+            locks.delete(key);
+          }
+        } catch (err) {
+          console.error("[agent:lavalink:lock] cleanup failed:", key, err?.message);
+        }
       });
 
     locks.set(key, next);
@@ -319,13 +475,21 @@ export function createAgentLavalink(agentClient) {
 
   function queueTotalMs(player) {
     let total = 0;
+    const MAX_SAFE_MS = Number.MAX_SAFE_INTEGER / 1000; // Prevent overflow
+    
     const current = getCurrent(player);
     const curLen = trackLengthMs(current);
-    if (curLen > 0) total += curLen;
+    if (curLen > 0) {
+      total += curLen;
+      if (total > MAX_SAFE_MS) return MAX_SAFE_MS;
+    }
 
     for (const t of getQueueTracks(player)) {
       const len = trackLengthMs(t);
-      if (len > 0) total += len;
+      if (len > 0) {
+        total += len;
+        if (total > MAX_SAFE_MS) return MAX_SAFE_MS;
+      }
     }
     return total;
   }
@@ -343,9 +507,10 @@ export function createAgentLavalink(agentClient) {
     const maxTrackMinutes = Number(limits?.maxTrackMinutes);
     const maxQueueMinutes = Number(limits?.maxQueueMinutes);
 
+    // Count only queued tracks (not current) for queue limit
     if (Number.isFinite(maxQueue)) {
-      const count = queueTotalCount(player);
-      if (count + 1 > maxQueue) throw new Error("queue-full");
+      const queuedCount = getQueueTracks(player).length;
+      if (queuedCount + 1 > maxQueue) throw new Error("queue-full");
     }
 
     const lengthMs = trackLengthMs(track);
@@ -414,27 +579,59 @@ export function createAgentLavalink(agentClient) {
 
   function bestEffortClearQueue(player) {
     const q = player?.queue;
-    if (!q) return;
+    if (!q) return false;
 
     try {
-      if (typeof q.clear === "function") return q.clear();
-    } catch {}
+      if (typeof q.clear === "function") {
+        q.clear();
+        return true;
+      }
+    } catch (err) {
+      console.warn("[agent:lavalink:clearQueue] q.clear() failed:", err?.message);
+    }
 
     try {
-      if (Array.isArray(q)) return void (q.length = 0);
-      if (Array.isArray(q.tracks)) return void (q.tracks.length = 0);
-      if (typeof q.splice === "function" && typeof q.length === "number") return void q.splice(0, q.length);
-    } catch {}
+      if (Array.isArray(q)) {
+        q.length = 0;
+        return true;
+      }
+      if (Array.isArray(q.tracks)) {
+        q.tracks.length = 0;
+        return true;
+      }
+      if (typeof q.splice === "function" && typeof q.length === "number") {
+        q.splice(0, q.length);
+        return true;
+      }
+    } catch (err) {
+      console.warn("[agent:lavalink:clearQueue] fallback clear failed:", err?.message);
+    }
+    
+    return false;
   }
 
   function markStopping(ctx, ms) {
     ctx.__stopping = true;
     ctx.__destroyAt = Date.now() + Math.max(0, Math.trunc(ms));
-    if (ctx.__destroyTimer) clearTimeout(ctx.__destroyTimer);
+    
+    // Clear existing timer safely
+    if (ctx.__destroyTimer) {
+      try {
+        clearTimeout(ctx.__destroyTimer);
+      } catch {}
+      ctx.__destroyTimer = null;
+    }
+    
     ctx.__destroyTimer = setTimeout(() => {
       try {
+        // Clear the timer reference first to avoid double-cleanup
+        if (ctx.__destroyTimer) {
+          ctx.__destroyTimer = null;
+        }
         destroySession(ctx.guildId, ctx.voiceChannelId);
-      } catch {}
+      } catch (err) {
+        console.error("[agent:lavalink:markStopping] destroy failed:", err?.message ?? err);
+      }
     }, Math.max(0, Math.trunc(ms)));
   }
 
@@ -445,10 +642,15 @@ export function createAgentLavalink(agentClient) {
 
   function clearStopping(ctx) {
     if (!ctx) return;
+    
+    // Mark as not stopping first to prevent concurrent destroy
     ctx.__stopping = false;
     ctx.__destroyAt = null;
+    
     if (ctx.__destroyTimer) {
-      clearTimeout(ctx.__destroyTimer);
+      try {
+        clearTimeout(ctx.__destroyTimer);
+      } catch {}
       ctx.__destroyTimer = null;
     }
   }
@@ -468,29 +670,46 @@ export function createAgentLavalink(agentClient) {
     if (!list?.length) return;
 
     const remaining = [];
+    const resolved = [];
+    
     for (const w of list) {
       if (isDiscordVoiceReady(guildId, w.vcId)) {
-        clearTimeout(w.t);
-        w.resolve(true);
+        resolved.push(w);
       } else {
         remaining.push(w);
       }
     }
+    
+    // Update map atomically before resolving
     if (remaining.length) voiceWaiters.set(guildId, remaining);
     else voiceWaiters.delete(guildId);
+    
+    // Resolve after map update to avoid re-entry issues
+    for (const w of resolved) {
+      try {
+        clearTimeout(w.t);
+        w.resolve(true);
+      } catch {}
+    }
   }
 
   function waitForDiscordVoiceReady(guildId, voiceChannelId, timeoutMs = 12_000) {
     if (isDiscordVoiceReady(guildId, voiceChannelId)) return Promise.resolve(true);
 
     return new Promise((resolve, reject) => {
+      const timeoutDuration = Math.max(500, Number(timeoutMs) || 12_000);
+      
       const t = setTimeout(() => {
-        const list = voiceWaiters.get(guildId) ?? [];
-        const next = list.filter(x => x.resolve !== resolve);
-        if (next.length) voiceWaiters.set(guildId, next);
-        else voiceWaiters.delete(guildId);
-        reject(new Error("voice-not-ready"));
-      }, Math.max(500, Number(timeoutMs) || 12_000));
+        try {
+          const list = voiceWaiters.get(guildId) ?? [];
+          const next = list.filter(x => x.resolve !== resolve);
+          if (next.length) voiceWaiters.set(guildId, next);
+          else voiceWaiters.delete(guildId);
+          reject(new Error("voice-not-ready"));
+        } catch (err) {
+          reject(err);
+        }
+      }, timeoutDuration);
 
       const list = voiceWaiters.get(guildId) ?? [];
       list.push({ vcId: voiceChannelId, resolve, reject, t });
@@ -553,11 +772,23 @@ export function createAgentLavalink(agentClient) {
   }
 
   async function ensureUnpaused(player, guildId) {
+    console.log(`[ensureUnpaused] Before: player.paused=${player.paused}`);
     await lavalinkPatch(player, guildId, { paused: false });
+    // Force update player state
+    if (player && typeof player.paused !== 'undefined') {
+      player.paused = false;
+    }
+    console.log(`[ensureUnpaused] After: player.paused=${player.paused}`);
   }
 
   async function ensurePaused(player, guildId) {
+    console.log(`[ensurePaused] Before: player.paused=${player.paused}`);
     await lavalinkPatch(player, guildId, { paused: true });
+    // Force update player state
+    if (player && typeof player.paused !== 'undefined') {
+      player.paused = true;
+    }
+    console.log(`[ensurePaused] After: player.paused=${player.paused}`);
   }
 
   async function restStopNow(player, guildId) {
@@ -719,25 +950,58 @@ export function createAgentLavalink(agentClient) {
       ? providersOverride
       : (ctxProviders ?? (providersRaw
         ? providersRaw.split(",").map(s => s.trim()).filter(Boolean)
-        : ["scsearch", "ytmsearch", "ytsearch"]));
+        : ["ytmsearch", "ytsearch", "scsearch"]));
 
-    let lastErr = null;
-    for (const provider of providers) {
-      try {
-        const res = await ctx.player.search({ query: `${provider}:${identifier}` }, requester);
-        if (res?.tracks?.length) return res;
-      } catch (err) {
-        lastErr = err;
-        const msg = String(err?.message ?? err);
-        const ignorable = msg.includes("not") && msg.includes("enabled");
-        if (!ignorable) throw err;
+    const tryProviders = async list => {
+      let lastErr = null;
+      for (const provider of list) {
+        const variants = buildSearchVariants(identifier, provider);
+        for (const variant of variants) {
+          try {
+            const res = await ctx.player.search({ query: `${provider}:${variant}` }, requester);
+            if (res?.tracks?.length) return { res, lastErr: null };
+          } catch (err) {
+            lastErr = err;
+            const msg = String(err?.message ?? err);
+            const ignorable = msg.includes("not") && msg.includes("enabled");
+            if (!ignorable) throw err;
+          }
+        }
+      }
+      return { res: null, lastErr };
+    };
+
+    const fallbackRaw = String(process.env.MUSIC_FALLBACK_PROVIDERS || "scsearch").trim();
+    const fallbackProviders = Array.isArray(ctx?.fallbackProviders) && ctx.fallbackProviders.length
+      ? ctx.fallbackProviders
+      : (fallbackRaw ? fallbackRaw.split(",").map(s => s.trim()).filter(Boolean) : []);
+    const DEFAULT_SEARCH_PROVIDERS = ["ytmsearch", "ytsearch", "scsearch"];
+    const combined = [];
+    const seen = new Set();
+    for (const list of [providers, fallbackProviders, DEFAULT_SEARCH_PROVIDERS]) {
+      for (const p of list) {
+        const key = String(p || "").toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        combined.push(p);
       }
     }
 
-    if (lastErr) {
-      const msg = String(lastErr?.message ?? lastErr);
+    const first = await tryProviders(combined);
+    if (first?.res) return first.res;
+
+    try {
+      const res = await ctx.player.search({ query: identifier }, requester);
+      if (res?.tracks?.length) return res;
+    } catch (err) {
+      if (!first?.lastErr) first.lastErr = err;
+    }
+
+    if (first?.lastErr) {
+      const msg = String(first.lastErr?.message ?? first.lastErr);
       console.warn("[agent:lavalink:search] fallback exhausted:", msg);
     }
+
     return { tracks: [] };
   }
 
@@ -755,6 +1019,7 @@ export function createAgentLavalink(agentClient) {
 
   async function enqueueAndPlay(ctx, track) {
     return withCtxLock(ctx, async () => {
+      console.log(`[enqueueAndPlay] Starting for track: ${track.info?.title || track.title}`);
       ctx.lastActive = Date.now();
       clearStopping(ctx);
 
@@ -770,17 +1035,35 @@ export function createAgentLavalink(agentClient) {
       const limits = normalizeLimits(ctx.limits);
       enforceTrackLimits(player, track, limits);
 
-      const hadCurrent = Boolean(getCurrent(player));
-      const hadUpcoming = getQueueTracks(player).length > 0;
-      const hadPlaying = Boolean(player.playing);
+      const upcomingCount = getQueueTracks(player).length;
+      const active = Boolean(player.playing || player.paused);
+      const wasIdle = !active && upcomingCount === 0;
+
+      console.log(`[enqueueAndPlay] State: wasIdle=${wasIdle}, active=${active}, upcomingCount=${upcomingCount}, playing=${player.playing}, paused=${player.paused}`);
+
+      if (wasIdle) {
+        console.log(`[enqueueAndPlay] Queue is idle, starting playback immediately`);
+        await waitForDiscordVoiceReady(ctx.guildId, ctx.voiceChannelId);
+        await ensureUnpaused(player, ctx.guildId);
+        const playResult = await player.play({ clientTrack: track });
+        console.log(`[enqueueAndPlay] player.play() result:`, playResult);
+        return { action: "playing" };
+      }
 
       await player.queue.add(track);
+      console.log(`[enqueueAndPlay] Added track to queue`);
 
-      const wasIdle = !(hadCurrent || hadUpcoming || hadPlaying);
-      if (!wasIdle) return { action: "queued" };
+      const cur = getCurrent(player);
+      const nowActive = Boolean(player.playing || player.paused);
+      console.log(`[enqueueAndPlay] After add: cur=${!!cur}, nowActive=${nowActive}`);
+      if (!nowActive && !cur) {
+        console.log(`[enqueueAndPlay] Not active and no current track, forcing start`);
+        await forceStart(ctx);
+        return { action: "playing" };
+      }
 
-      await forceStart(ctx);
-      return { action: "playing" };
+      console.log(`[enqueueAndPlay] Track queued, playback already active`);
+      return { action: "queued" };
     });
   }
 
@@ -828,22 +1111,45 @@ export function createAgentLavalink(agentClient) {
       const current = getCurrent(player);
       const queued = getQueueTracks(player).length;
 
+      console.log(`[pause] state=${state}, current=${!!current}, player.playing=${player.playing}, player.paused=${player.paused}, queued=${queued}`);
+
       if (state === true) {
-        if (!current && !player.playing) return { ok: true, action: "nothing-playing" };
+        if (!current && !player.playing) {
+          console.log(`[pause] Nothing playing, returning`);
+          return { ok: true, action: "nothing-playing" };
+        }
+        if (player.paused) {
+          console.log(`[pause] Already paused, returning`);
+          return { ok: true, action: "already-paused" };
+        }
+        console.log(`[pause] Calling ensurePaused`);
         await ensurePaused(player, ctx.guildId);
         return { ok: true, action: "paused" };
       }
 
-      if (!current && !player.playing) {
+      // Resume logic (state === false)
+      if (current) {
+        if (player.paused) {
+          console.log(`[pause/resume] Track is paused, calling ensureUnpaused`);
+          await ensureUnpaused(player, ctx.guildId);
+          return { ok: true, action: "resumed" };
+        }
+        console.log(`[pause/resume] Already playing`);
+        return { ok: true, action: "already-playing" };
+      }
+
+      if (!player.playing) {
         if (queued > 0) {
+          console.log(`[pause/resume] Nothing playing but has queue, forcing start`);
           await forceStart(ctx);
           return { ok: true, action: "resumed" };
         }
+        console.log(`[pause/resume] Nothing playing and no queue`);
         return { ok: true, action: "nothing-playing" };
       }
 
-      await forceStart(ctx);
-      return { ok: true, action: "resumed" };
+      console.log(`[pause/resume] Fallback: already playing`);
+      return { ok: true, action: "already-playing" };
     });
   }
 
