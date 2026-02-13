@@ -215,8 +215,13 @@ async function handleList(interaction) {
     .setDescription('Available agent pools for deployments')
     .setTimestamp();
 
-  for (const pool of visiblePools) {
-    const agents = await storageLayer.fetchPoolAgents(pool.pool_id);
+  // Fetch all pool agents in parallel to avoid sequential queries
+  const agentPromises = visiblePools.map(pool => storageLayer.fetchPoolAgents(pool.pool_id));
+  const allAgents = await Promise.all(agentPromises);
+
+  for (let i = 0; i < visiblePools.length; i++) {
+    const pool = visiblePools[i];
+    const agents = allAgents[i];
     const agentCount = agents ? agents.length : 0;
     const visIcon = pool.visibility === 'public' ? '🌐' : '🔒';
     const owner = pool.owner_user_id === BOT_OWNER_ID ? 'goot27 (Master)' : `<@${pool.owner_user_id}>`;
@@ -555,8 +560,13 @@ async function handleAdminList(interaction) {
     .setDescription('Complete list of all pools including private')
     .setTimestamp();
 
-  for (const pool of allPools) {
-    const agents = await storageLayer.fetchPoolAgents(pool.pool_id);
+  // Fetch all pool agents in parallel
+  const agentPromises = allPools.map(pool => storageLayer.fetchPoolAgents(pool.pool_id));
+  const allAgents = await Promise.all(agentPromises);
+
+  for (let i = 0; i < allPools.length; i++) {
+    const pool = allPools[i];
+    const agents = allAgents[i];
     const agentCount = agents ? agents.length : 0;
     const activeCount = agents ? agents.filter(a => a.status === 'active').length : 0;
     const visIcon = pool.visibility === 'public' ? '🌐' : '🔒';

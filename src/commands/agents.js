@@ -444,6 +444,9 @@ export async function execute(interaction) {
     const userId = interaction.user.id;
     const BOT_OWNER_ID = process.env.BOT_OWNER_ID || '1122800062628634684';
 
+    // Defer immediately since we're doing multiple database queries
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     try {
       // Determine pool
       let poolId;
@@ -452,14 +455,12 @@ export async function execute(interaction) {
         // User specified a pool - verify it exists and they own it
         const specifiedPool = await fetchPool(poolOption);
         if (!specifiedPool) {
-          return await interaction.reply({ 
-            flags: MessageFlags.Ephemeral, 
+          return await interaction.editReply({ 
             content: `❌ Pool \`${poolOption}\` not found.` 
           });
         }
         if (specifiedPool.owner_user_id !== userId && userId !== BOT_OWNER_ID) {
-          return await interaction.reply({ 
-            flags: MessageFlags.Ephemeral, 
+          return await interaction.editReply({ 
             content: `❌ You don't own pool \`${poolOption}\`.` 
           });
         }
@@ -476,14 +477,12 @@ export async function execute(interaction) {
 
       const result = await insertAgentBot(agentId, token, clientId, tag, poolId);
       const operationMsg = result.operation === 'inserted' ? 'added' : 'updated';
-      await interaction.reply({ 
-        flags: MessageFlags.Ephemeral, 
+      await interaction.editReply({ 
         content: `✅ Agent token ${agentId} ${operationMsg} successfully to pool \`${poolId}\`. AgentRunner will attempt to start it.` 
       });
     } catch (error) {
       console.error(`Error adding/updating agent token: ${error}`);
-      await interaction.reply({ 
-        flags: MessageFlags.Ephemeral, 
+      await interaction.editReply({ 
         content: `Failed to add/update agent token: ${error.message}` 
       });
     }
@@ -491,10 +490,13 @@ export async function execute(interaction) {
   }
 
   if (sub === "list_tokens") {
+    // Defer immediately since we're fetching multiple pools
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     try {
       const tokens = await fetchAgentBots();
       if (tokens.length === 0) {
-        await interaction.reply({ flags: MessageFlags.Ephemeral, content: "No agent tokens registered." });
+        await interaction.editReply({ content: "No agent tokens registered." });
         return;
       }
 
@@ -508,6 +510,15 @@ export async function execute(interaction) {
         poolMap.get(poolId).push(token);
       }
 
+      // Fetch all pools at once to avoid sequential queries
+      const poolIds = Array.from(poolMap.keys());
+      const poolPromises = poolIds.map(id => fetchPool(id));
+      const pools = await Promise.all(poolPromises);
+      const poolDataMap = new Map();
+      pools.forEach((pool, idx) => {
+        if (pool) poolDataMap.set(poolIds[idx], pool);
+      });
+
       const embed = new EmbedBuilder()
         .setTitle("Registered Agent Tokens")
         .setColor(0x0099ff)
@@ -515,7 +526,7 @@ export async function execute(interaction) {
         
       let description = '';
       for (const [poolId, poolTokens] of poolMap) {
-        const pool = await fetchPool(poolId);
+        const pool = poolDataMap.get(poolId);
         const poolName = pool ? pool.name : poolId;
         const visIcon = pool?.visibility === 'public' ? '🌐' : '🔒';
         
@@ -528,10 +539,10 @@ export async function execute(interaction) {
 
       embed.setDescription(description.slice(0, 4096));
 
-      await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ embeds: [embed] });
     } catch (error) {
       console.error(`Error listing agent tokens: ${error}`);
-      await interaction.reply({ flags: MessageFlags.Ephemeral, content: `Failed to list agent tokens: ${error.message}` });
+      await interaction.editReply({ content: `Failed to list agent tokens: ${error.message}` });
     }
     return;
   }
