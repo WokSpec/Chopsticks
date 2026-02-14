@@ -45,6 +45,10 @@ services:
       - NODE_ENV=production
       - AGENT_RUNNER_POLL_INTERVAL_MS=10000
       - MAX_AGENTS_PER_RUNNER=10
+      - AGENT_CONTROL_URL=${AGENT_CONTROL_URL:-ws://bot:8787}
+      - LAVALINK_HOST=${LAVALINK_HOST:-lavalink}
+      - LAVALINK_PORT=${LAVALINK_PORT:-2333}
+      - LAVALINK_PASSWORD=${LAVALINK_PASSWORD:-youshallnotpass}
     networks:
       - chopsticks
     depends_on:
