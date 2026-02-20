@@ -15,6 +15,7 @@ const CATEGORY_DEFAULTS = {
   core:      [12, 10],  // Help/info: standard
   economy:   [8,  15],  // Economy actions: moderate
   tools:     [8,  15],  // Utility tools: moderate
+  community: [10, 15],  // Community features: moderate
   // default applied when category is missing or unknown
   _default:  [12, 10],
 };
@@ -43,6 +44,8 @@ const COMMAND_OVERRIDES = {
   "model link": [3, 300], // Sensitive: API key linking
   agent:        [5, 60],
   agents:       [5, 60],
+  antispam:     [2, 30],  // Admin config: slow to prevent rapid changes
+  streak:       [5, 60],  // Daily check-in: bounded per user per minute
 };
 
 /**
