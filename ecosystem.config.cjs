@@ -13,7 +13,8 @@ module.exports = {
         DISCORD_TOKEN: process.env.DISCORD_TOKEN,
         CLIENT_ID: process.env.CLIENT_ID,
         DEV_GUILD_ID: process.env.DEV_GUILD_ID,
-
+        // PM2 manages the agent runner as a separate process — do not spawn a child here
+        DISABLE_AGENT_RUNNER: "true",
         LAVALINK_HOST: process.env.LAVALINK_HOST,
         LAVALINK_PORT: process.env.LAVALINK_PORT,
         LAVALINK_PASSWORD: process.env.LAVALINK_PASSWORD,
