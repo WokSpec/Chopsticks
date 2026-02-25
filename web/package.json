@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "preview": "next build && npx wrangler pages dev out --port 3000",
     "deploy": "next build && ../../WokSite/node_modules/.bin/wrangler pages deploy out --project-name chopsticks-wokspec --branch main"
   },
   "dependencies": {
