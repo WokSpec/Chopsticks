@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useRef } from 'react';
 
+const HOVERABLE = 'a, button, [role="button"], label, input, select, textarea, .btn, .bento-card, .cmd-card, .tutorial-card, .community-card, .accordion-trigger, .tab-btn, .nav-link';
+
 export default function CursorTracker() {
   const ringRef = useRef<HTMLDivElement>(null);
   const dotRef  = useRef<HTMLDivElement>(null);
@@ -19,7 +21,6 @@ export default function CursorTracker() {
     const onMove = (e: MouseEvent) => {
       mx = e.clientX;
       my = e.clientY;
-      // dot follows instantly
       dot.style.left = mx + 'px';
       dot.style.top  = my + 'px';
       dot.classList.remove('cursor-hidden');
@@ -27,29 +28,24 @@ export default function CursorTracker() {
     };
 
     const loop = () => {
-      // ring follows with a slight lag via lerp
-      const rx = parseFloat(ring.style.left  || '0');
-      const ry = parseFloat(ring.style.top   || '0');
-      const nx = rx + (mx - rx) * 0.18;
-      const ny = ry + (my - ry) * 0.18;
-      ring.style.left = nx + 'px';
-      ring.style.top  = ny + 'px';
+      const rx = parseFloat(ring.style.left || '0');
+      const ry = parseFloat(ring.style.top  || '0');
+      ring.style.left = rx + (mx - rx) * 0.18 + 'px';
+      ring.style.top  = ry + (my - ry) * 0.18 + 'px';
       raf = requestAnimationFrame(loop);
     };
 
-    const onLeave  = () => { ring.classList.add('cursor-hidden'); dot.classList.add('cursor-hidden'); };
-    const onEnter  = () => { ring.classList.remove('cursor-hidden'); dot.classList.remove('cursor-hidden'); };
-    const onDown   = () => { ring.classList.add('cursor-clicking'); dot.style.transform = 'translate(-50%,-50%) scale(0.5)'; };
-    const onUp     = () => { ring.classList.remove('cursor-clicking'); dot.style.transform = 'translate(-50%,-50%) scale(1)'; };
+    const onLeave = () => { ring.classList.add('cursor-hidden');    dot.classList.add('cursor-hidden'); };
+    const onEnter = () => { ring.classList.remove('cursor-hidden'); dot.classList.remove('cursor-hidden'); };
+    const onDown  = () => { ring.classList.add('cursor-clicking');    dot.style.transform = 'translate(-50%,-50%) scale(0.5)'; };
+    const onUp    = () => { ring.classList.remove('cursor-clicking'); dot.style.transform = 'translate(-50%,-50%) scale(1)'; };
 
-    const onHoverIn  = () => ring.classList.add('cursor-hovering');
-    const onHoverOut = () => ring.classList.remove('cursor-hovering');
-
-    const updateHoverables = () => {
-      document.querySelectorAll<HTMLElement>('a, button, [role="button"], label, input, select, textarea, .btn, .bento-card, .cmd-card, .tutorial-card, .community-card, .accordion-trigger, .tab-btn, .nav-link').forEach(el => {
-        el.addEventListener('mouseenter', onHoverIn);
-        el.addEventListener('mouseleave', onHoverOut);
-      });
+    // Use event delegation — one listener on body, no per-element bookkeeping
+    const onDelegatedEnter = (e: MouseEvent) => {
+      if ((e.target as Element).closest(HOVERABLE)) ring.classList.add('cursor-hovering');
+    };
+    const onDelegatedLeave = (e: MouseEvent) => {
+      if ((e.target as Element).closest(HOVERABLE)) ring.classList.remove('cursor-hovering');
     };
 
     document.addEventListener('mousemove',  onMove);
@@ -57,11 +53,8 @@ export default function CursorTracker() {
     document.addEventListener('mouseenter', onEnter);
     document.addEventListener('mousedown',  onDown);
     document.addEventListener('mouseup',    onUp);
-
-    // initial + re-scan after hydration
-    updateHoverables();
-    const observer = new MutationObserver(updateHoverables);
-    observer.observe(document.body, { childList: true, subtree: true });
+    document.body.addEventListener('mouseover',  onDelegatedEnter);
+    document.body.addEventListener('mouseout',   onDelegatedLeave);
 
     raf = requestAnimationFrame(loop);
 
@@ -71,7 +64,8 @@ export default function CursorTracker() {
       document.removeEventListener('mouseenter', onEnter);
       document.removeEventListener('mousedown',  onDown);
       document.removeEventListener('mouseup',    onUp);
-      observer.disconnect();
+      document.body.removeEventListener('mouseover',  onDelegatedEnter);
+      document.body.removeEventListener('mouseout',   onDelegatedLeave);
       cancelAnimationFrame(raf);
     };
   }, []);

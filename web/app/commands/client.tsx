@@ -239,7 +239,7 @@ export default function CommandsClient() {
     return c;
   }, [slashCmds]);
 
-  const slashCats = useMemo(() => ['Config','Moderation','Music','Agents','AI','Utility'], []);
+  const slashCats = useMemo(() => ['Moderation', 'Music', 'Fun & Games', 'Economy', 'Automation', 'AI', 'Utility'], []);
 
   return (
     <div>
@@ -278,7 +278,7 @@ export default function CommandsClient() {
           <div style={{ position: 'relative', flex: '1 1 220px', minWidth: 180 }}>
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ position: 'absolute', left: '0.625rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-faint)', pointerEvents: 'none' }}><circle cx="6" cy="6" r="4"/><path d="M10 10l2.5 2.5"/></svg>
             <input
-              type="text" placeholder={`Search ${tab} commands…`} value={search}
+              type="text" aria-label={`Search ${tab} commands`} placeholder={`Search ${tab} commands…`} value={search}
               onChange={e => setSearch(e.target.value)}
               style={{ width: '100%', paddingLeft: '2rem', paddingRight: '0.75rem', paddingTop: '0.45rem', paddingBottom: '0.45rem', background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: '0.5rem', color: 'var(--text)', fontSize: '0.85rem', outline: 'none', fontFamily: 'var(--font-body)', boxSizing: 'border-box' }}
             />
