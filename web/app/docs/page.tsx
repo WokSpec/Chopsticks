@@ -96,7 +96,7 @@ export default function DocsPage() {
       </section>
 
       {/* Content */}
-      <div className="container" style={{ padding: '3.5rem 1.5rem', display: 'grid', gridTemplateColumns: '200px 1fr', gap: '3rem', maxWidth: '1000px', alignItems: 'start' }}>
+      <div className="docs-grid container" style={{ padding: '3.5rem 1.5rem', maxWidth: '1000px', alignItems: 'start' }}>
 
         {/* Sticky scrollspy sidebar */}
         <nav style={{ position: 'sticky', top: 72, display: 'flex', flexDirection: 'column', gap: 0, background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', padding: '0.625rem', overflow: 'hidden' }}>
@@ -116,10 +116,10 @@ export default function DocsPage() {
 
           <section id="overview" style={SECTION}>
             <h2 style={H2}>Overview</h2>
-            <p style={P}>Chopsticks is a full-featured Discord bot built on discord.js v14 with PostgreSQL persistence, Redis caching, and a Lavalink audio backend. It ships 162 prefix commands and 20 core slash commands across music, moderation, economy, games, AI, and social features.</p>
+            <p style={P}>Chopsticks is a full-featured Discord bot built on discord.js v14 with PostgreSQL persistence, Redis caching, and a Lavalink audio backend. It ships 148 prefix commands and 101 slash commands across music, moderation, economy, games, AI, and social features.</p>
             <p style={P}>It&apos;s open source and actively developed — you can self-host your own instance, fork the code, or <strong style={{ color: 'var(--text)' }}>contribute directly</strong> and help build something genuinely great.</p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.625rem', marginTop: '1.25rem' }}>
-              {[['162', 'Prefix commands'], ['20', 'Slash commands'], ['MIT', 'License']].map(([v, l]) => (
+              {[['148', 'Prefix commands'], ['101', 'Slash commands'], ['MIT', 'License']].map(([v, l]) => (
                 <div key={l} style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '1rem', textAlign: 'center' }}>
                   <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 700, fontSize: '1.25rem', color: 'var(--accent)', letterSpacing: '-0.03em' }}>{v}</div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-faint)', fontFamily: 'var(--font-heading)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: '0.2rem' }}>{l}</div>
