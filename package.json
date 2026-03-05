@@ -73,7 +73,7 @@
     "lavalink-client": "^2.7.7",
     "mammoth": "^1.11.0",
     "msedge-tts": "^2.0.4",
-    "opossum": "^8.1.0",
+    "opossum": "^9.0.0",
     "opusscript": "^0.0.8",
     "pdf-parse": "^2.4.5",
     "pg": "^8.11.5",
