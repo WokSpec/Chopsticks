@@ -1,3 +1,31 @@
+## Tool Usage
+- Only call MCP tools when explicitly required for the current task
+- Do not probe, verify, or check state unless asked
+- Do not call GitHub, Cloudflare, filesystem, or any MCP tool as a check before acting unless the task requires it
+- Prefer bash over MCP tools when bash can do the job
+
+## Session Hygiene
+- Use /compact proactively in long sessions
+- Do not re-read files already in context
+
+## General
+- Be direct and minimal
+- No unnecessary confirmation messages
+- Execute, then report — don't narrate while doing
+
+## GitHub
+- Primary account: ws-sam
+- Always commit and push as ws-sam
+- Do not assume Claude is the sole contributor
+- Preserve ws-sam's commit history — do not squash or overwrite existing commits
+- Default branch: main
+
+## Stack
+- Discord bot — production, contributor-led
+- discord.js v14, Node.js 22
+
+---
+
 # CLAUDE.md — Chopsticks Agent Guide
 
 > This file is the authoritative reference for AI coding agents (Claude, Copilot, etc.) working in
