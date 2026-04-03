@@ -31,3 +31,11 @@ web/.wrangler/
 web/.env.local
 web/.env*.local
 !web/public/data/
+
+# AI agent context & rules — never commit to public repos
+CLAUDE.md
+AGENT_RULES.md
+PROJECT_CONTEXT.md
+*_CONTEXT.md
+docs/AGENT_PROTOCOL.md
+.github/copilot-instructions.md
