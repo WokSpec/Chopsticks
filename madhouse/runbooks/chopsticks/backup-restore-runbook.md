@@ -1,4 +1,4 @@
-# Backup & Restore Runbook — Chopsticks PostgreSQL
+# Backup & Restore Runbook — <app-name> PostgreSQL
 
 ## Quick Reference
 
@@ -16,7 +16,7 @@
 ### Manual backup
 ```bash
 ./scripts/backup-db.sh
-# Output: data/backups/chopsticks_20260220T030000Z.sql.gz
+# Output: data/backups/<app-name>_20260220T030000Z.sql.gz
 ```
 
 ### Custom output directory
@@ -25,9 +25,9 @@ BACKUP_DIR=/mnt/backup ./scripts/backup-db.sh
 ```
 
 ### Cron schedule (daily at 03:00 UTC)
-Add to `/etc/cron.d/chopsticks-backup`:
+Add to `/etc/cron.d/<app-name>-backup`:
 ```
-0 3 * * * root cd /path/to/Chopsticks && COMPOSE_PROJECT_NAME=chopsticks ./scripts/backup-db.sh >> /var/log/chopsticks-backup.log 2>&1
+0 3 * * * root cd /path/to/<app-repo> && COMPOSE_PROJECT_NAME=<app-name> ./scripts/backup-db.sh >> /var/log/<app-name>-backup.log 2>&1
 ```
 
 Backups older than `BACKUP_KEEP_DAYS` (default: 7) are automatically pruned.
@@ -37,13 +37,13 @@ Backups older than `BACKUP_KEEP_DAYS` (default: 7) are automatically pruned.
 ## Restore
 
 ### Emergency restore (destructive)
-1. Stop the bot to prevent writes during restore:
+1. Stop the app to prevent writes during restore:
    ```bash
    docker compose -f docker-compose.production.yml stop bot agents
    ```
 2. Run restore:
    ```bash
-   ./scripts/restore-db.sh data/backups/chopsticks_20260220T030000Z.sql.gz
+   ./scripts/restore-db.sh data/backups/<app-name>_20260220T030000Z.sql.gz
    # Type YES when prompted
    ```
 3. Run migrations to ensure schema is current:
@@ -58,11 +58,11 @@ Backups older than `BACKUP_KEEP_DAYS` (default: 7) are automatically pruned.
 ### Testing restores (non-destructive)
 Restore to a temporary DB to validate:
 ```bash
-docker exec chopsticks-postgres psql -U chopsticks -c "CREATE DATABASE chopsticks_restore_test;"
-gunzip -c data/backups/chopsticks_20260220T030000Z.sql.gz | \
-  docker exec -i chopsticks-postgres psql -U chopsticks -d chopsticks_restore_test
+docker exec <app-postgres-container> psql -U <db-user> -c "CREATE DATABASE <app-name>_restore_test;"
+gunzip -c data/backups/<app-name>_20260220T030000Z.sql.gz | \
+  docker exec -i <app-postgres-container> psql -U <db-user> -d <app-name>_restore_test
 # Inspect, then clean up:
-docker exec chopsticks-postgres psql -U chopsticks -c "DROP DATABASE chopsticks_restore_test;"
+docker exec <app-postgres-container> psql -U <db-user> -c "DROP DATABASE <app-name>_restore_test;"
 ```
 
 ---
@@ -73,9 +73,9 @@ docker exec chopsticks-postgres psql -U chopsticks -c "DROP DATABASE chopsticks_
 |----------|---------|-------------|
 | `BACKUP_DIR` | `./data/backups` | Where backups are stored |
 | `BACKUP_KEEP_DAYS` | `7` | Days to retain backups |
-| `COMPOSE_PROJECT_NAME` | `chopsticks` | Docker container prefix |
-| `POSTGRES_USER` | `chopsticks` | DB user |
-| `POSTGRES_DB` | `chopsticks` | DB name |
+| `COMPOSE_PROJECT_NAME` | `<app-name>` | Docker container prefix |
+| `POSTGRES_USER` | `<db-user>` | DB user |
+| `POSTGRES_DB` | `<db-name>` | DB name |
 
 ---
 
@@ -84,13 +84,13 @@ docker exec chopsticks-postgres psql -U chopsticks -c "DROP DATABASE chopsticks_
 After each cron backup, sync to remote storage:
 ```bash
 # S3-compatible (rclone)
-rclone copy data/backups/ s3:my-bucket/chopsticks-backups/
+rclone copy data/backups/ s3:my-bucket/<app-name>-backups/
 
 # Or rsync to backup server
-rsync -az data/backups/ backup-user@backup-host:/backups/chopsticks/
+rsync -az data/backups/ backup-user@backup-host:/backups/<app-name>/
 ```
 
 Add to cron after the backup step:
 ```
-5 3 * * * root rclone copy /path/to/Chopsticks/data/backups/ s3:my-bucket/chopsticks-backups/ >> /var/log/chopsticks-backup-sync.log 2>&1
+5 3 * * * root rclone copy /path/to/<app-repo>/data/backups/ s3:my-bucket/<app-name>-backups/ >> /var/log/<app-name>-backup-sync.log 2>&1
 ```

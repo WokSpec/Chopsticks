@@ -1,37 +1,28 @@
-# Runbook: Voice Model Selection — Admin Guide
+# Voice Model Selection Runbook
 
-Purpose
-- Guide server admins through linking their own LLM provider keys (Anthropic/Claude, OpenAI) and enabling voice LLM for their server.
+## Purpose
+Link LLM provider keys (Anthropic, OpenAI, Ollama) to enable server-specific voice AI features.
 
-Prerequisites
-- Server admin privileges (Manage Guild)
-- Access to server dashboard or ability to run bot commands
-- If using local Ollama, the administrator must host Ollama and confirm `OLLAMA_URL` is reachable from the bot host.
+## Prerequisites
+- Server Admin privileges (`Manage Guild`).
+- Valid API key for the chosen provider.
+- For Ollama: `OLLAMA_URL` must be reachable from the bot host.
 
-Daily Operations
-- To enable a provider:
-  1. Run `/model set anthropic` (ephemeral reply explains next steps).
-  2. Open dashboard link or respond to the modal `/model link` and paste your API key.
-  3. Bot validates key by calling a single health/generate endpoint (non-billing short call).
-  4. If validation succeeds, token encrypted and stored; provider status flips to `configured`.
+## 1. Enable/Link Provider
+1. **Select Provider:** Run `/model set <anthropic|openai|ollama>`.
+2. **Link Key:** Use `/model link` to open a secure modal and paste the API key.
+3. **Verification:** The bot performs a non-billing health call. Status flips to `configured` on success.
 
-- To disable provider:
-  1. Run `/model unset` — removes stored token and sets provider to `none`.
+## 2. Token Management
+- **Rotate:** Use `/model link` with a new key; the old key is securely overwritten.
+- **Disable:** Run `/model unset` to remove the stored token and revert to default behavior.
 
-Token Rotation
-- To rotate tokens, use `/model link` with new key; old key is securely deleted after new key validated.
+## 3. Security
+- Tokens are encrypted at rest using `AGENT_TOKEN_KEY`.
+- Never paste keys into public channels; always use the `/model link` modal.
 
-Security & Privacy
-- Tokens are encrypted at rest using AGENT_TOKEN_KEY; ensure AGENT_TOKEN_KEY is rotated via documented admin process.
-- Do NOT paste tokens into public channels. The `/model link` flow opens an ephemeral secure modal or dashboard link.
-
-Troubleshooting
-- Validation failed: ensure API key is correct and has access to the requested model.
-- Ollama unreachable: check network and that Ollama container is running and has the model installed.
-
-Rollback
-- If enabling provider causes errors, run `/model unset` to remove key and return to default free behavior (empty responses).
-
-Contact
-- For help, contact repo maintainers or open an issue with logs and correlation IDs.
+## 4. Troubleshooting
+- **Validation Failed:** Check key permissions and model access.
+- **Ollama Offline:** Verify container status and network connectivity.
+- **Emergency Reset:** Run `/model unset` to stop all custom AI processing.
 
