@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="./icon.png" width="120" height="120" alt="Chopsticks" />
+</div>
+
 # Chopsticks
 
 **A production-grade, open source Discord bot — music, moderation, economy, AI, and a community-powered agent pool system for voice and assistant workloads at scale.**
